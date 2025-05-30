@@ -2,7 +2,7 @@
 A minimal Robotic Operating System for GPU-first robots.
 
 Features:
-- 
+-
 
 ## Installation
 ```bash
