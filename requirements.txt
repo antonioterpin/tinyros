@@ -1,0 +1,3 @@
+jax[cuda12]==0.5.3
+cupy_cuda12x
+pytest
