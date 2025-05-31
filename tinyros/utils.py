@@ -1,3 +1,5 @@
+"""Utilities for TinyROS."""
+
 import logging
 
 DEBUG = False  # Set to True to enable debug logging
