@@ -84,7 +84,6 @@ class DataType:
             else:
                 # Sorry, copy may happen
                 serialized_data[key] = self.__dict__[key]
-
         return pickle.dumps(serialized_data)
 
     def serialize_cupy(self, arr_cp: cp.ndarray) -> SerializedCuPyArray:

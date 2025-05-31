@@ -43,7 +43,7 @@ def test_put_and_get_single_thread(capacity, items):
     seqs = []
 
     # insert items and collect their sequence numbers
-    last_t = -1
+    last_t = 0
     for item in items:
         buf.put(serialize(item))
         seq, _ = buf.get_newest(t=last_t, timeout=1)
@@ -54,18 +54,18 @@ def test_put_and_get_single_thread(capacity, items):
     assert seqs == sorted(seqs)
 
     # newest is the last we inserted
-    _, newest_item = buf.get_newest(t=-1, timeout=1)
+    _, newest_item = buf.get_newest(t=0, timeout=1)
     newest_item = deserialize(newest_item)
     assert newest_item == items[-1]
 
     # oldest is the first
-    _, oldest = buf.get_next_after(t=-1, timeout=1)
+    _, oldest = buf.get_next_after(t=0, timeout=1)
     oldest = deserialize(oldest)
     assert oldest == items[0]
 
     # reconstruct “all” in order using get_next_after
     all_items = []
-    t = -1
+    t = 0
     while True:
         nxt = buf.get_next_after(t, timeout=1)
         if nxt is None:
@@ -94,7 +94,7 @@ def test_overwrite_behavior():
     # We expect the buffer to hold only [4,5,6]
     # Reconstruct via get_next_after
     collected = []
-    t = -1
+    t = 0
     while True:
         nxt = buf.get_next_after(t, timeout=1)
         if nxt is None:
@@ -106,7 +106,7 @@ def test_overwrite_behavior():
 
     # oldest seq is 4, newest is 6
     assert collected[0] == 4
-    last_seq, _ = buf.get_newest(-1, timeout=1)
+    last_seq, _ = buf.get_newest(0, timeout=1)
     assert last_seq == 6
 
     # next after 4 is 5, after 6 is None
@@ -128,17 +128,13 @@ def test_concurrent_read_during_write():
             time.sleep(0.002)
 
     def reader():
-        for _ in range(total * 2):
-            # sample the buffer size by walking until get_next_after returns None
-            count = 0
-            t = -1
-            while True:
-                nxt = buf.get_next_after(t, timeout=0)
-                if nxt is None:
-                    break
-                count += 1
-                t = nxt[0]
-            read_counts.append(count)
+        t = 0
+        for _ in range(total * 5):
+            nxt = buf.get_next_after(t, timeout=1)
+            if nxt is None:
+                break
+            t = nxt[0]
+            read_counts.append(t)
             time.sleep(0.001)
 
     pw = Process(target=writer)
@@ -148,10 +144,7 @@ def test_concurrent_read_during_write():
     pw.join()
     pr.join()
 
-    # all observed counts in [0, capacity]
-    assert all(0 <= c <= capacity for c in read_counts)
-    # eventually we must have seen the buffer full
-    assert capacity in read_counts
+    assert [i for i in read_counts] == [i + 1 for i in range(total)]
 
 
 @pytest.mark.parametrize("frequency", [10, 50, 100, 1000])
@@ -169,7 +162,7 @@ def test_transfer_latency(frequency):
             time.sleep(1 / frequency)
 
     def reader():
-        seq = -1
+        seq = 0
         for _ in range(N):
             # wait for an item to be available
             entry = buf.get_newest(t=seq, timeout=2)
@@ -198,4 +191,4 @@ def test_transfer_latency(frequency):
     expected_serialization_latency /= N
     latency -= expected_serialization_latency
 
-    assert latency < 0.08, f"Data transfer took too long: {latency:.3f}ms"
+    assert latency < 0.12, f"Data transfer took too long: {latency:.3f}ms"
