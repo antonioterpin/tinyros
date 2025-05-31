@@ -9,6 +9,10 @@ from multiprocessing import get_context
 from multiprocessing.shared_memory import SharedMemory
 from typing import Callable, Optional, Tuple
 
+class BufferClosedError(Exception):
+    """Custom exception for broken pipe errors in the buffer."""
+    pass
+
 
 class Buffer:
     """A process-safe ring buffer using multiprocessing.SharedMemory.
@@ -111,6 +115,8 @@ class Buffer:
             TypeError: If data is not bytes/bytearray.
             ValueError: If len(data) != slot_size.
         """
+        if self._shm_items.buf is None or self._shm_seqs.buf is None:
+            raise BufferClosedError("Buffer has been closed or unlinked")
         if not isinstance(data, (bytes, bytearray)):
             raise TypeError("put() expects bytes or bytearray")
         length = len(data)
@@ -164,6 +170,9 @@ class Buffer:
             Optional[Tuple[int, bytes]]: 
                 The first (seq, data) matching seq > t, or None on timeout.
         """
+        if self._shm_seqs.buf is None or self._shm_items.buf is None:
+            raise BufferClosedError("Buffer has been closed or unlinked")
+
         if not isinstance(t, int) or t < 0:
             raise ValueError("t must be a non-negative integer")
 
