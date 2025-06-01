@@ -2,7 +2,7 @@
 A minimal Robotic Operating System for GPU-first robots.
 
 Features:
--
+- .... I will finish this README soon
 
 ## Installation
 ```bash
@@ -10,8 +10,10 @@ pip install tinyros
 ```
 
 ## Example
+Soon. You can check out the tests for now, in particular test_architect.py
 
 ## Why TinyROS?
+You know it :D
 
 ## Questions
 Please open a separate GitHub issue for each question or requested feature.
@@ -20,7 +22,7 @@ Please open a separate GitHub issue for each question or requested feature.
 If you use `TinyROS` in your research (you should, drop ROS/ROS2!!!), please hand out a citation:
 ```bibtex
 @software{terpin2025tinyros,
-  author       = {Terpin, Antonio and D'Andrea, Raffaello},
+  author       = {Terpin, Antonio},
   title        = {{TinyROS}: A Lightweight Robot Operating System for GPU-first robots},
   year         = {2025},
   version      = {1.0.0},
