@@ -3,9 +3,9 @@ from multiprocessing import Manager, get_context
 
 import pytest
 
-from tinyros.buffer import ReadersWriterLock
+from tinyros.memory.buffer import ReadersWriterLock
 
-_ctx = get_context("spawn")
+_ctx = get_context("fork")
 
 
 def reader_task(
