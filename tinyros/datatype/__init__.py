@@ -1,16 +1,9 @@
 """Data types for TinyROS."""
-
-from tinyros.datatype.base import DataType, SerializedCuPyArray
+from .sharray import CupySharray
+from .definition import TinyROSMessageFieldDefinition, TinyROSMessageDefinition
 
 __all__ = [
-    "DataType",
-    "SerializedCuPyArray",
+    "TinyROSMessageFieldDefinition",
+    "TinyROSMessageDefinition",
+    "CupySharray",
 ]
-
-try:
-    from tinyros.datatype.jax import JaxDataType, SerializedJaxArray  # noqa: F401
-
-    __all__.append("JaxDataType")
-    __all__.append("SerializedJaxArray")
-except ImportError:
-    pass

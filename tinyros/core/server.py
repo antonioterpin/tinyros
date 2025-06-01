@@ -1,29 +1,67 @@
-from multiprocessing import get_context
+"""Server class for managing a message buffer in a TinyROS system."""
 
-from tinyros.buffer import Buffer
-from tinyros.datatype import DataType
+from tinyros.memory import Buffer
+from tinyros.datatype import TinyROSMessageDefinition
+
 
 class Server:
-    def __init__(
-        self,
-        buffer: Buffer,
-    ):
-        """Initialize a Server instance.
-        
-        Args:
-            topic (str): The topic to publish to.
-            mock_data (DataType): The mock data to initialize the buffer.
-            buffer (Buffer): The buffer for storing messages.
-        """
-        self._buffer = buffer
+    """A Server class to manage a message buffer."""
 
-    def publish(self, data: DataType):
-        """Publish data to the server's buffer.
-        
+    def __init__(
+        self, msg_def: TinyROSMessageDefinition, capacity: int, ctx=None
+    ) -> "Server":
+        """Initialize a Server instance.
+
         Args:
-            data (DataType): The data to publish.
+            msg_def (TinyROSMessageDefinition):
+                The definition of the message that the server will handle.
+            capacity (int): The capacity of the server's buffer.
+            ctx (Optional[Context]):
+                The context for multiprocessing. Defaults to None, which uses 'fork'.
         """
-        self._buffer.put(data.serialize())
+        self._buffer = Buffer(capacity=capacity, msg_def=msg_def, ctx=ctx)
+        self._data_description = {f.name: f.dtype for f in msg_def}
+
+    def publish(self, **kwargs) -> None:
+        """Publish data to the server's buffer.
+
+        Args:
+            **kwargs: The data to be published, as keyword arguments.
+        """
+        self._check_data_description(kwargs)
+        self._buffer.put({k: kwargs[k] for k in self._data_description.keys()})
+
+    def _check_data_description(self, kwargs: dict) -> None:
+        """Check if the provided kwargs match the server's data description.
+
+        Args:
+            kwargs (dict): The keyword arguments to check against the data description.
+
+        Raises:
+            ValueError: If any required keys are missing from kwargs.
+            TypeError:
+                If the types of the values in kwargs do not match the data description.
+        """
+        missing_keys = [k for k in self._data_description if k not in kwargs]
+        if missing_keys:
+            raise ValueError(
+                f"The following required keys are missing from kwargs: {missing_keys}"
+            )
+
+        type_mismatches = {
+            k: (type(kwargs[k]), self._data_description[k])
+            for k in kwargs
+            if not isinstance(kwargs[k], self._data_description[k])
+        }
+        if type_mismatches:
+            mismatch_details = ", ".join(
+                f"{k}: expected {expected}, got {actual}"
+                for k, (actual, expected) in type_mismatches.items()
+            )
+            raise TypeError(
+                f"Data types in kwargs do not match the data description. "
+                f"Mismatches: {mismatch_details}"
+            )
 
     @property
     def buffer(self) -> Buffer:
@@ -33,28 +71,4 @@ class Server:
     def close(self):
         """Close the server's buffer."""
         self.buffer.close()
-
-    @classmethod
-    def make(
-        cls,
-        capacity: int,
-        mock_data: DataType,
-    ) -> "Server":
-        """Create a server instance.
-        
-        Args:
-            capacity (int): The capacity of the buffer.
-            mock_data (DataType): The mock data to initialize the buffer.
-            synchronizer (Optional[Synchronizer]): 
-                An optional synchronizer for the server.
-
-        Returns:
-            Server: An instance of the Server class.
-        """
-        # Explicitly use 'spawn' context for multiprocessing
-        # Else, in ubuntu, it will use 'fork' by default
-        ctx = get_context("spawn")
-        buffer = Buffer(
-            capacity=capacity, slot_size=len(mock_data.serialize()), ctx=ctx)
-
-        return cls(buffer)
+        del self._buffer

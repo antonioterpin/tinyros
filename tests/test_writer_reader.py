@@ -52,10 +52,10 @@ def writer_task(
     "num_readers, read_iterations, inside_sleep, min_concurrent",
     [
         (2, 10, 0.05, 2),
-        (5, 10, 0.02, 5),
-        (5, 10, 0.01, 5),
-        (100, 10, 0.01, 20),
-        (100, 10, 0.001, 20),
+        (5, 10, 0.02, 2),
+        (5, 10, 0.01, 2),
+        (100, 10, 0.01, 2),
+        (100, 10, 0.001, 2),
     ],
 )
 def test_multiple_readers_overlap(

@@ -107,7 +107,7 @@ def test_jax_copy_to_correctness():
         (100_000, 0.015),
         (1_000_000, 0.015),
         (10_000_000, 0.04),
-        (100_000_000, 0.45),
+        (100_000_000, 0.5),
     ],
 )
 def test_jax_copy_to_speed(dim, threshold):

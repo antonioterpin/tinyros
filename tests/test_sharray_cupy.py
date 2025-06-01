@@ -150,7 +150,7 @@ def test_cupy_copy_to_correctness():
 
 @pytest.mark.parametrize(
     "dim,threshold",
-    [(100_000, 0.004), (1_000_000, 0.005), (10_000_000, 0.04), (100_000_000, 0.5)],
+    [(100_000, 0.008), (1_000_000, 0.011), (10_000_000, 0.08), (100_000_000, 0.9)],
 )
 def test_cupy_copy_to_speed(dim, threshold):
     a = cp.arange(dim, dtype=cp.float32)
@@ -158,6 +158,7 @@ def test_cupy_copy_to_speed(dim, threshold):
     start = time.perf_counter()
     for _ in range(1000):
         CupySharray.copy_to(a, b)
+        cp.cuda.Stream.null.synchronize()
     end = time.perf_counter()
     elapsed = end - start  # ms average
     assert elapsed < threshold, (
