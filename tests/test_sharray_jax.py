@@ -2,17 +2,40 @@ import timeit
 import time
 
 import cupy as cp
-import jax
-import jax.numpy as jnp
 import pytest
 
-from tinyros.datatype.sharray.jax import jax_to_cupy, cupy_to_jax, JaxSharray
 
-jax.config.update("jax_enable_x64", True)
+JAX_AVAILABLE = True
+try:
+    import jax
+    import jax.numpy as jnp
+    from tinyros.datatype.sharray.jax import jax_to_cupy, cupy_to_jax, JaxSharray
+
+    jax.config.update("jax_enable_x64", True)
+except ImportError:
+    JAX_AVAILABLE = False
+
+    class jnp:
+        pass
+
+    jnp.int32 = None
+    jnp.float32 = None
+    jnp.float64 = None
+
+    def jax_to_cupy(x):
+        raise ImportError("JAX is not available, cannot convert JAX to CuPy.")
+
+    def cupy_to_jax(x):
+        raise ImportError("JAX is not available, cannot convert CuPy to JAX.")
+
 
 # NOTE: Most of the tests follow from the cupy tests.
 
 
+@pytest.mark.skipif(
+    not JAX_AVAILABLE,
+    reason="JAX is not available, skipping JAX-related tests.",
+)
 @pytest.mark.parametrize(
     "shape,dtype",
     [
@@ -39,6 +62,10 @@ def test_jax_to_cupy_timing(shape, dtype):
     ), f"Average transfer time {avg_ms:.4f} ms exceeded {threshold_ms} ms"
 
 
+@pytest.mark.skipif(
+    not JAX_AVAILABLE,
+    reason="JAX is not available, skipping JAX-related tests.",
+)
 @pytest.mark.parametrize(
     "shape,dtype",
     [
@@ -64,6 +91,10 @@ def test_jax_to_cupy_no_dlpack_timing(shape, dtype):
     )
 
 
+@pytest.mark.skipif(
+    not JAX_AVAILABLE,
+    reason="JAX is not available, skipping JAX-related tests.",
+)
 @pytest.mark.parametrize(
     "shape,dtype",
     [
@@ -88,6 +119,10 @@ def test_cupy_to_jax_no_dlpack_timing(shape, dtype):
     ), f"Average transfer time {avg_ms:.4f} ms exceeds {threshold_ms} ms"
 
 
+@pytest.mark.skipif(
+    not JAX_AVAILABLE,
+    reason="JAX is not available, skipping JAX-related tests.",
+)
 def test_jax_copy_to_correctness():
     """Test that JaxSharray.copy_to correctly copies data between CuPy arrays."""
     a = jnp.arange(100, dtype=cp.int32)
@@ -101,6 +136,10 @@ def test_jax_copy_to_correctness():
     assert jnp.array_equal(a2, b2)
 
 
+@pytest.mark.skipif(
+    not JAX_AVAILABLE,
+    reason="JAX is not available, skipping JAX-related tests.",
+)
 @pytest.mark.parametrize(
     "dim,threshold",
     [
