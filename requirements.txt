@@ -1,4 +1,0 @@
-# jax[cuda12]==0.5.3
-setuptools
-cupy_cuda12x
-pytest

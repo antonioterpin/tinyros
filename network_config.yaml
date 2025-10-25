@@ -1,0 +1,44 @@
+# TinyROS Network Configuration
+# Defines the nodes and their connections in the distributed system
+
+nodes:
+  ScalarPublisher:
+    port: 5001
+    host: localhost
+
+  ImagePublisher:
+    port: 5002
+    host: localhost
+
+  ControlProcessor:
+    port: 5003
+    host: localhost
+
+  FeedbackProcessor:
+    port: 5004
+    host: localhost
+
+connections:
+  # ScalarPublisher publishes scalar_data to ControlProcessor
+  ScalarPublisher:
+    scalar_data:
+      - actor: ControlProcessor
+        cb_name: on_scalar_data
+
+  # ImagePublisher publishes image_data to ControlProcessor
+  ImagePublisher:
+    image_data:
+      - actor: ControlProcessor
+        cb_name: on_image_data
+
+  # ControlProcessor publishes actuation_command to FeedbackProcessor
+  ControlProcessor:
+    actuation_command:
+      - actor: FeedbackProcessor
+        cb_name: on_actuation_command
+
+  # FeedbackProcessor publishes actuation_feedback back to ControlProcessor
+  FeedbackProcessor:
+    actuation_feedback:
+      - actor: ControlProcessor
+        cb_name: on_feedback_data

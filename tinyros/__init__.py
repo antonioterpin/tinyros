@@ -1,1 +1,0 @@
-"""TinyROS package initialization module."""

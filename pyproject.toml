@@ -1,0 +1,116 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinyros"
+version = "0.2"
+description = "A minimal operating system for robotics."
+readme = "README.md"
+license = { text = "MIT" }
+urls = { Homepage = "https://github.com/antonioterpin/tinyros" }
+authors = [
+    { name = "Antonio Terpin", email = "aterpin@ethz.ch" },
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+requires-python = ">=3.10"
+
+# Core dependencies
+dependencies = [
+    "portal>=0.1.0",
+    "PyYAML>=6.0.0",
+]
+
+# Optional dependencies
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "hypothesis>=6.0.0",
+    "snowballstemmer==2.2.0",
+    "pre_commit==4.0.1",
+    "tomli"
+]
+example = ["numpy>=1.21.0"]
+
+# autopep8 configuration for 4-space indentation
+[tool.autopep8]
+max_line_length = 80
+indent_size = 4
+aggressive = 2
+in_place = true
+exclude = ".eggs,.git,.hg,.mypy_cache,.tox,.venv,_build,buck-out,build,dist"
+
+# isort configuration (updated for autopep8 compatibility)
+[tool.isort]
+line_length = 80
+indent = 4
+multi_line_output = 0
+force_single_line = false
+include_trailing_comma = false
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+
+# MyPy configuration
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+show_error_codes = true
+explicit_package_bases = true
+mypy_path = "src"
+
+# Allow untyped decorators in test files for Hypothesis
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_decorators = false
+
+# Pydocstyle configuration
+[tool.pydocstyle]
+convention = "google"
+match-dir = "^(?!tests).*"
+
+# Bandit security configuration
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "build", "dist"]
+
+# Pytest configuration
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+        "-ra",
+        "--strict-markers",
+        "--strict-config",
+        "--cov=src",
+        "--cov-branch",
+        "--cov-report=term-missing",
+        "--cov-report=html",
+        "--cov-report=xml",
+]
+testpaths = ["tests"]
+filterwarnings = [
+        "error",
+        "ignore::UserWarning",
+        "ignore::DeprecationWarning",
+]
+
+[dependency-groups]
+dev = [
+    "build>=1.3.0",
+    "twine>=6.2.0",
+]
