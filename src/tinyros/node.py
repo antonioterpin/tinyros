@@ -17,7 +17,6 @@ from logging import getLogger
 from typing import Any, Dict, List, Tuple
 
 import portal
-import yaml
 
 # Configure logging
 logging.basicConfig(
@@ -88,14 +87,16 @@ class TinyNetworkConfig:
         return subscribers
 
     @classmethod
-    def load_from_config(cls, config_path: str) -> 'TinyNetworkConfig':
-        """Load network configuration from a YAML file."""
-        with open(config_path, 'r') as file:
-            config_data = yaml.safe_load(file)
+    def load_from_config(cls, config: dict) -> 'TinyNetworkConfig':
+        """Load network configuration from a dictionary.
+        
+        Args:
+            config (dict): Configuration dictionary
+        """
 
         # Parse nodes
         nodes = {}
-        for node_name, node_data in config_data['nodes'].items():
+        for node_name, node_data in config['nodes'].items():
             nodes[node_name] = TinyNodeDescription(
                 port=node_data['port'],
                 host=node_data['host']
@@ -103,7 +104,7 @@ class TinyNetworkConfig:
 
         # Parse connections
         connections: Dict[str, Dict[str, List[TinySubscription]]] = {}
-        for publisher_name, topics in config_data['connections'].items():
+        for publisher_name, topics in config['connections'].items():
             connections[publisher_name] = {}
             for topic_name, subscribers in topics.items():
                 connections[publisher_name][topic_name] = [

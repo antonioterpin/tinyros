@@ -12,6 +12,7 @@ Each actor is implemented as a class inheriting from TinyNode.
 import logging
 import os
 import time
+import yaml
 
 import numpy as np
 import portal
@@ -27,7 +28,9 @@ logger = logging.getLogger(__name__)
 
 # Load network configuration from YAML file
 config_path = os.path.join(os.path.dirname(__file__), 'network_config.yaml')
-NETWORK_CONFIG = TinyNetworkConfig.load_from_config(config_path)
+with open(config_path, 'r') as file:
+    config = yaml.safe_load(file)
+NETWORK_CONFIG = TinyNetworkConfig.load_from_config(config)
 
 
 class ScalarPublisher(TinyNode):
