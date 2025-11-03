@@ -12,10 +12,10 @@ Each actor is implemented as a class inheriting from TinyNode.
 import logging
 import os
 import time
-import yaml
 
 import numpy as np
 import portal
+import yaml
 
 from tinyros import TinyNetworkConfig, TinyNode
 

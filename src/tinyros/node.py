@@ -11,6 +11,7 @@ supports dynamic topic-based publish/subscribe messaging.
 """
 
 import atexit
+import concurrent.futures
 import logging
 from dataclasses import dataclass
 from logging import getLogger
@@ -89,11 +90,10 @@ class TinyNetworkConfig:
     @classmethod
     def load_from_config(cls, config: dict) -> 'TinyNetworkConfig':
         """Load network configuration from a dictionary.
-        
+
         Args:
             config (dict): Configuration dictionary
         """
-
         # Parse nodes
         nodes = {}
         for node_name, node_data in config['nodes'].items():
@@ -219,18 +219,22 @@ class TinyNode():
                     "not found!"
                 )
 
-    def publish(self, topic: str, message: Any) -> None:
+    def publish(
+            self, topic: str, message: Any) -> List[concurrent.futures.Future]:
         """Publish a message to all subscribers of a topic."""
         if topic not in self.topic_calls:
             logger.warning(f"{self.name}: No subscribers for topic '{topic}'")
-            return
+            return []
 
+        futures = []
         for client_key, cb_name in self.topic_calls[topic]:
             try:
                 client = self.clients[client_key]
-                getattr(client, cb_name)(message)
+                futures.append(getattr(client, cb_name)(message))
             except Exception as e:
                 logger.error(f"{self.name}: Failed to send message - {e}")
+
+        return futures
 
     def shutdown(self) -> None:
         """Shutdown the node and close all connections."""
