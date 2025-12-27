@@ -21,6 +21,7 @@ requires-python = ">=3.10"
 
 # Core dependencies
 dependencies = [
+    "jax[cuda12]>=0.6.2",
     "portal>=0.1.0",
     "PyYAML>=6.0.0",
 ]
