@@ -14,7 +14,7 @@ from tinyros import (TinyNetworkConfig, TinyNode, TinyNodeDescription,
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 
-REPETITIONS = 100
+REPETITIONS = 1000
 
 
 def get_free_port() -> int:
@@ -53,11 +53,21 @@ class SinkNode(TinyNode):
         self.recv_ts.append(t)
 
 
+@pytest.mark.run_explicitly
 @pytest.mark.parametrize("sub_hw", ["cpu", "gpu"])
-@pytest.mark.parametrize("shape", [(1, 1), (2, 2), (4, 4), (8, 8), (16, 16),
-                         (32, 32), (64, 64), (128, 128), (256, 256), (512, 512), (1024, 1024)])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (1, 1), (2, 2), (4, 4), (8, 8), (16, 16),
+        (32, 32), (64, 64), (128, 128),
+        (256, 256), (512, 512), (1024, 1024)
+    ]
+)
 def test_latency_cpu_gpu_payloads(
-        payload_factory: Callable, shape: tuple[int, int], sub_hw: str) -> None:
+        payload_factory: Callable,
+        shape: tuple[int, int],
+        sub_hw: str
+) -> None:
     """Test latency of tinyros message passing with CPU/GPU payloads."""
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -67,7 +77,7 @@ def test_latency_cpu_gpu_payloads(
     nbytes = meta["bytes"]
 
     # skip impossible GPU cases early
-    if sub_hw == "gpu":
+    if sub_hw == "gpu" or pub_hw == "gpu":
         try:
             jax.devices("gpu")
         except RuntimeError:
@@ -91,7 +101,7 @@ def test_latency_cpu_gpu_payloads(
     sub = SinkNode("sub", net, sub_hw=sub_hw)
     pub = TinyNode("pub", net)
 
-    time.sleep(0.1)
+    time.sleep(1)
 
     latencies: list[float] = []
 
