@@ -1,0 +1,6 @@
+numpy==1.26.4
+jax==0.6.2
+jax-cuda12-pjrt==0.6.2
+jax-cuda12-plugin==0.6.2
+jaxlib==0.6.2
+ml_dtypes==0.5.4

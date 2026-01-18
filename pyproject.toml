@@ -109,6 +109,9 @@ filterwarnings = [
         "ignore::UserWarning",
         "ignore::DeprecationWarning",
 ]
+markers = [
+  "run_explicitly: marks tests that must be run explicitly (e.g. benchmarks)",
+]
 
 [dependency-groups]
 dev = [
