@@ -28,6 +28,7 @@ def payload_factory(request: pytest.FixtureRequest) -> Callable:
                 pytest.skip("No GPU devices visible to JAX")
 
             payload = jax.device_put(arr, devices[0])
+            jax.block_until_ready(payload)
 
         return {
             "payload": payload,

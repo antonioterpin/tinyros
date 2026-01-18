@@ -26,6 +26,20 @@ def get_free_port() -> int:
     return port
 
 
+def wait_port_free(port: int, *, timeout_s: float = 2.0) -> None:
+    """Wait until the given port is free (closed)."""
+    t0 = time.perf_counter()
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.1)
+            ok = s.connect_ex(("127.0.0.1", port))  # 0 = open, !=0 = closed
+        if ok != 0:
+            return
+        if time.perf_counter() - t0 > timeout_s:
+            raise AssertionError(f"Port {port} still open after {timeout_s}s")
+        time.sleep(0.01)
+
+
 class SinkNode(TinyNode):
     """Subscriber node with optional GPU staging."""
 
@@ -46,7 +60,7 @@ class SinkNode(TinyNode):
 
         if self.sub_hw == "gpu":
             # host -> device transfer
-            arr = jax.device_put(np.asarray(msg), jax.devices("gpu")[0])
+            arr = jax.device_put(msg, jax.devices("gpu")[0])
             jax.block_until_ready(arr)
 
         t = time.perf_counter()
@@ -60,16 +74,19 @@ class SinkNode(TinyNode):
     [
         (1, 1), (2, 2), (4, 4), (8, 8), (16, 16),
         (32, 32), (64, 64), (128, 128),
-        (256, 256), (512, 512), (1024, 1024)
+        (256, 256), (512, 512),
+        (1024, 1024)
     ]
 )
 def test_latency_cpu_gpu_payloads(
+        monkeypatch: pytest.MonkeyPatch,
         payload_factory: Callable,
         shape: tuple[int, int],
         sub_hw: str
 ) -> None:
     """Test latency of tinyros message passing with CPU/GPU payloads."""
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    monkeypatch.setattr("atexit.register", lambda *a, **k: None)
 
     meta = payload_factory(shape)
     payload = meta["payload"]
@@ -110,16 +127,17 @@ def test_latency_cpu_gpu_payloads(
 
         # device -> host if needed
         if pub_hw == "gpu":
-            jax.block_until_ready(payload)
             payload_host = np.asarray(payload)
         else:
             payload_host = payload
 
-        pub.publish("topic", payload_host)
+        futures = pub.publish("topic", payload_host)
+        for future in futures:
+            future.result()
 
         # wait for receive
         while len(sub.recv_ts) <= len(latencies):
-            time.sleep(0.0001)
+            time.sleep(1e-5)
 
         t1 = sub.recv_ts[len(latencies)]
         latencies.append(t1 - t0)
@@ -162,3 +180,11 @@ def test_latency_cpu_gpu_payloads(
         ])
 
     assert len(latencies) == REPETITIONS
+
+    # shut down nodes
+    pub.shutdown()
+    sub.shutdown()
+
+    # give time for sockets to close
+    wait_port_free(pub_port)
+    wait_port_free(sub_port)
