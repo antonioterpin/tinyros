@@ -44,7 +44,8 @@ benchmarks in this repository.
 
    ### Run benchmark
 
-   To run the benchmark use this line:
+   To run the benchmarks use these lines:
    ```bash
    python -m benchmark_ros2.runner
+   python -m benchmark_ros2.runner_multiprocess
    ```

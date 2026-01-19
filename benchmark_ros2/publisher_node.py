@@ -1,12 +1,12 @@
-"""ROS 2 publisher node for latency benchmarking."""
+"""ROS 2 publisher node for latency benchmarking (cv_bridge)."""
 
 import time
 
 import jax
 import numpy as np
-import rclpy
+from cv_bridge import CvBridge
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray
+from sensor_msgs.msg import Image
 
 VALID_HW = ("cpu", "gpu")
 
@@ -23,41 +23,19 @@ class LatencyPublisher(Node):
                 f"Invalid pub_hw: {pub_hw}. Must be one of {VALID_HW}.")
         self.pub_hw = pub_hw
 
-        self.publisher = self.create_publisher(
-            Float32MultiArray,
-            "latency_topic",
-            10,
-        )
-
+        self.publisher = self.create_publisher(Image, "latency_topic", 10)
+        self.bridge = CvBridge()
         self.send_ts: list[float] = []
 
-    def publish_array(self, arr: np.ndarray) -> None:
+    def publish_array(self, arr: np.ndarray | jax.Array) -> None:
         """Publish the given array and record the send timestamp."""
-        if self.pub_hw == "gpu":
-            dev = jax.device_put(arr, jax.devices("gpu")[0])
-            jax.block_until_ready(dev)
-            arr = np.asarray(dev)
-
-        msg = Float32MultiArray()
-        msg.data = arr.ravel().tolist()
-
         t = time.perf_counter()
+
+        if self.pub_hw == "gpu":
+            arr = np.asarray(jax.device_get(arr))  # GPU -> CPU
+
+        # cv_bridge packing
+        msg = self.bridge.cv2_to_imgmsg(arr, encoding="32FC1")
+
         self.publisher.publish(msg)
         self.send_ts.append(t)
-
-
-def main() -> None:
-    """Main function to run the publisher node."""
-    rclpy.init()
-    node = LatencyPublisher(pub_hw="cpu")
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()

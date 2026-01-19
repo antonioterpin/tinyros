@@ -8,6 +8,7 @@ from typing import Tuple
 import jax
 import numpy as np
 import rclpy
+from rclpy.executors import SingleThreadedExecutor
 
 from benchmark_ros2.publisher_node import LatencyPublisher
 from benchmark_ros2.subscriber_node import LatencySubscriber
@@ -67,12 +68,15 @@ def run_once(
     pub = LatencyPublisher(pub_hw=pub_hw)
     sub = LatencySubscriber(sub_hw=sub_hw)
 
-    executor = rclpy.executors.SingleThreadedExecutor()
+    executor = SingleThreadedExecutor()
     executor.add_node(pub)
     executor.add_node(sub)
 
     arr = np.zeros(shape, dtype=np.float32)
     nbytes = arr.nbytes
+    if pub_hw == "gpu":
+        arr = jax.device_put(arr, jax.devices("gpu")[0])
+        jax.block_until_ready(arr)
 
     latencies = []
 
@@ -81,7 +85,7 @@ def run_once(
             pub.publish_array(arr)
 
             while len(sub.recv_ts) < len(pub.send_ts):
-                executor.spin_once(timeout_sec=0.001)
+                executor.spin_once(timeout_sec=1e-5)
 
             latencies.append(
                 sub.recv_ts[-1] - pub.send_ts[-1]
