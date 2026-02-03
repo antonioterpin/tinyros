@@ -20,9 +20,13 @@ import portal
 import pytest
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
+IMG_DIR = os.path.join(RESULTS_DIR, "images")
+CSV_DIR = os.path.join(RESULTS_DIR, "csv")
 
 REPETITIONS = 1000
 VISUALIZE = True
+WARMUP = 10
+SLEEP_BETWEEN_ITERS_S = 1e-3
 
 
 def save_latency_plot(
@@ -57,14 +61,18 @@ def save_latency_plot(
     plt.title(header)
 
     if show_p50_p95 and len(y) > 0:
-        median = float(np.percentile(y, 50))  # ms
+        median = float(np.percentile(y, 50))
+        mean = float(np.mean(y))
         p95 = float(np.percentile(y, 95))
         plt.axhline(median, linestyle="--", linewidth=1, color="red")
+        plt.axhline(mean, linestyle="--", linewidth=1, color="green")
         plt.axhline(p95, linestyle="--", linewidth=1)
         plt.legend(["latency",
-                    f"median={median:.1f}ms",
-                    f"p95={p95:.1f}ms"],
-                   loc="best")
+                    f"median={median:.3f}ms",
+                    f"mean={mean:.3f}ms",
+                    f"p95={p95:.3f}ms"],
+                   loc="best",
+                   )
 
     plt.grid(True)
     fig.tight_layout()
@@ -130,7 +138,8 @@ def test_latency_cpu_gpu_payloads(
     sub_hw: str,
 ) -> None:
     """Test latency of pure portal message passing with CPU/GPU payloads."""
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(IMG_DIR, exist_ok=True)
+    os.makedirs(CSV_DIR, exist_ok=True)
     monkeypatch.setattr("atexit.register", lambda *a, **k: None)
 
     meta = payload_factory(shape)
@@ -166,7 +175,7 @@ def test_latency_cpu_gpu_payloads(
     time.sleep(3.0)  # allow some time for connections to establish
 
     # warm-up
-    for _ in range(10):
+    for _ in range(WARMUP):
         if pub_hw == "gpu":
             payload_host = np.asarray(payload)
         else:
@@ -174,10 +183,8 @@ def test_latency_cpu_gpu_payloads(
         client.on_msg(payload_host)
         while len(sink.recv_ts) <= len(latencies):
             time.sleep(1e-5)
-        latencies.append(0.0)
-        latencies.clear()
         sink.recv_ts.clear()
-        time.sleep(1e-3)
+        time.sleep(SLEEP_BETWEEN_ITERS_S)
 
     for _ in range(REPETITIONS):
         t0 = time.perf_counter()
@@ -196,7 +203,7 @@ def test_latency_cpu_gpu_payloads(
 
         t1 = sink.recv_ts[len(latencies)]
         latencies.append(t1 - t0)
-        time.sleep(1e-3)  # avoid overwhelming the subscriber
+        time.sleep(SLEEP_BETWEEN_ITERS_S)  # avoid overwhelming the subscriber
 
     server.close()
     client.close()
@@ -205,11 +212,11 @@ def test_latency_cpu_gpu_payloads(
     lat_ms = [x * 1e3 for x in latencies]
 
     # Save per-iteration plot
-    img_path = os.path.join(
-        RESULTS_DIR,
-        f"portal_latency_trace_{pub_hw}_to_{sub_hw}_{shape[0]}x{shape[1]}.png",
-    )
     if VISUALIZE:
+        img_path = os.path.join(
+            IMG_DIR,
+            f"portal_latency_trace_{pub_hw}_to_{sub_hw}_{shape[0]}x{shape[1]}.png",
+        )
         save_latency_plot(
             lat_ms=lat_ms,
             out_path=img_path,
@@ -231,7 +238,7 @@ def test_latency_cpu_gpu_payloads(
     }
 
     csv_path = os.path.join(
-        RESULTS_DIR,
+        CSV_DIR,
         f"portal_latency_{pub_hw}_to_{sub_hw}.csv",
     )
     write_header = not os.path.exists(csv_path)

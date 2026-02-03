@@ -8,9 +8,11 @@ import os
 import statistics
 import time
 from multiprocessing.synchronize import Event
-from typing import Tuple
+from pathlib import Path
+from typing import Sequence, Tuple
 
 import jax
+import matplotlib.pyplot as plt
 import numpy as np
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
@@ -18,12 +20,17 @@ from rclpy.executors import SingleThreadedExecutor
 from benchmark_ros2.publisher_node import LatencyPublisher
 from benchmark_ros2.subscriber_node import LatencySubscriber
 
+WARMUP = 10
+SLEEP_BETWEEN_ITERS_S = 1e-3
+VISUALIZE = True
 GPU_PUB = "0"
 GPU_SUB = "1"
 
 REPETITIONS = 1000
 
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
+RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results_mp")
+CSV_DIR = os.path.join(RESULTS_DIR, "csv")
+IMG_DIR = os.path.join(RESULTS_DIR, "images")
 
 SHAPES = [
     (1, 1),
@@ -68,6 +75,55 @@ def _wait_for_match(pub: LatencyPublisher, *, timeout_s: float = 2.0) -> None:
             # Not fatal, but usually indicates discovery issues
             return
         time.sleep(0.1)
+
+
+def save_latency_plot(
+    *,
+    lat_ms: Sequence[float],
+    out_path: str | os.PathLike,
+    title: str,
+    shape: tuple[int, int],
+    pub_hw: str,
+    sub_hw: str,
+    nbytes: int,
+    dpi: int = 150,
+) -> None:
+    """Save a PNG plot of latency (ms) over iterations."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    y = np.asarray(lat_ms, dtype=np.float64)
+    x = np.arange(len(y), dtype=np.int32)
+
+    fig = plt.figure()
+    plt.plot(x, y)
+    plt.xlabel("Iteration")
+    plt.ylabel("Latency [ms]")
+
+    plt.title(
+        f"{title}\n"
+        f"{pub_hw} -> {sub_hw} | "
+        f"shape={shape[0]}x{shape[1]} | bytes={nbytes}"
+    )
+
+    if len(y) > 0:
+        median = float(np.percentile(y, 50))
+        mean = float(np.mean(y))
+        p95 = float(np.percentile(y, 95))
+        plt.axhline(median, linestyle="--", linewidth=1, color="red")
+        plt.axhline(mean, linestyle="--", linewidth=1, color="green")
+        plt.axhline(p95, linestyle="--", linewidth=1)
+        plt.legend(["latency",
+                    f"median={median:.3f}ms",
+                    f"mean={mean:.3f}ms",
+                    f"p95={p95:.3f}ms"],
+                   loc="best",
+                   )
+
+    plt.grid(True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=dpi)
+    plt.close(fig)
 
 
 def run_once_mp(
@@ -118,6 +174,14 @@ def run_once_mp(
     try:
         _wait_for_match(pub, timeout_s=2.0)
 
+        # Warm-up
+        for _ in range(WARMUP):
+            ex.spin_once(timeout_sec=0.0)
+            pub.publish_array(arr)
+            ack_q.get(timeout=5.0)  # drain one ack
+            pub.send_ts.clear()
+            time.sleep(SLEEP_BETWEEN_ITERS_S)
+
         for _ in range(REPETITIONS):
             # Spin a bit to process DDS events (discovery, etc.)
             ex.spin_once(timeout_sec=0.0)
@@ -128,6 +192,8 @@ def run_once_mp(
             # Wait for receive ack from subscriber callback (t1)
             t1 = ack_q.get(timeout=10.0)
             latencies.append(t1 - pub.send_ts[-1])
+            # avoid overwhelming the subscriber
+            time.sleep(SLEEP_BETWEEN_ITERS_S)
 
     finally:
         # stop subscriber process
@@ -139,22 +205,38 @@ def run_once_mp(
         pub.destroy_node()
         rclpy.shutdown()
 
-    lat_us = [x * 1e6 for x in latencies]
+    lat_ms = [x * 1e3 for x in latencies]
+
+    if VISUALIZE:
+        img_path = os.path.join(
+            IMG_DIR,
+            f"ros2_latency_trace_mp_{pub_hw}_to_{sub_hw}_{shape[0]}x{shape[1]}.png",
+        )
+        save_latency_plot(
+            lat_ms=lat_ms,
+            out_path=img_path,
+            title="ROS2 Latency Benchmark (Multiprocess)",
+            shape=shape,
+            pub_hw=pub_hw,
+            sub_hw=sub_hw,
+            nbytes=nbytes,
+        )
 
     stats = {
-        "min": min(lat_us),
-        "max": max(lat_us),
-        "mean": statistics.mean(lat_us),
-        "std": statistics.stdev(lat_us) if len(lat_us) > 1 else 0.0,
-        "median": statistics.median(lat_us),
-        "p95_best": statistics.quantiles(lat_us, n=20)[0],    # 5th percentile
-        "p95_worst": statistics.quantiles(lat_us, n=20)[18],  # 95th percentile
+        "min": min(lat_ms),
+        "max": max(lat_ms),
+        "mean": statistics.mean(lat_ms),
+        "std": statistics.stdev(lat_ms) if len(lat_ms) > 1 else 0.0,
+        "median": statistics.median(lat_ms),
+        "p95_best": statistics.quantiles(lat_ms, n=20)[0],    # 5th percentile
+        "p95_worst": statistics.quantiles(lat_ms, n=20)[18],  # 95th percentile
     }
 
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(CSV_DIR, exist_ok=True)
+    os.makedirs(IMG_DIR, exist_ok=True)
 
     csv_path = os.path.join(
-        RESULTS_DIR,
+        CSV_DIR,
         f"ros2_latency_mp_{pub_hw}_to_{sub_hw}.csv",
     )
 
@@ -165,10 +247,10 @@ def run_once_mp(
             w.writerow([
                 "pub_hw", "sub_hw",
                 "height", "width", "bytes",
-                "min_us", "max_us",
-                "mean_us", "std_us",
-                "median_us",
-                "p95_best_us", "p95_worst_us",
+                "min_ms", "max_ms",
+                "mean_ms", "std_ms",
+                "median_ms",
+                "p95_best_ms", "p95_worst_ms",
             ])
         w.writerow([
             pub_hw, sub_hw,
