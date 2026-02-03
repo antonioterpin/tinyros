@@ -1,11 +1,20 @@
+"""Benchmark tests for portal message passing speed with CPU/GPU payloads.
+
+Run with: pytest -m run_explicitly tests/benchmark/portal/test_speed_portal.py
+"""
+
+from __future__ import annotations
+
 import csv
 import os
 import socket
 import statistics
 import time
-from typing import Callable
+from pathlib import Path
+from typing import Callable, Sequence
 
 import jax
+import matplotlib.pyplot as plt
 import numpy as np
 import portal
 import pytest
@@ -13,6 +22,54 @@ import pytest
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 
 REPETITIONS = 1000
+VISUALIZE = True
+
+
+def save_latency_plot(
+    *,
+    lat_ms: Sequence[float],
+    out_path: str | os.PathLike,
+    title: str,
+    shape: tuple[int, int],
+    pub_hw: str,
+    sub_hw: str,
+    nbytes: int,
+    dpi: int = 150,
+    show_p50_p95: bool = True,
+) -> None:
+    """Save a PNG plot of latency (ms) over iterations."""
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    y = np.asarray(lat_ms, dtype=np.float64)
+    x = np.arange(len(y), dtype=np.int32)
+
+    fig = plt.figure()
+    plt.plot(x, y)  # no explicit colors
+    plt.xlabel("Iteration")
+    plt.ylabel("Latency [ms]")
+
+    header = (
+        f"{title}\n"
+        f"{pub_hw} -> {sub_hw} | shape={shape[0]}x{shape[1]} | bytes={nbytes}"
+    )
+    plt.title(header)
+
+    if show_p50_p95 and len(y) > 0:
+        median = float(np.percentile(y, 50))  # ms
+        p95 = float(np.percentile(y, 95))
+        plt.axhline(median, linestyle="--", linewidth=1, color="red")
+        plt.axhline(p95, linestyle="--", linewidth=1)
+        plt.legend(["latency",
+                    f"median={median:.1f}ms",
+                    f"p95={p95:.1f}ms"],
+                   loc="best")
+
+    plt.grid(True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=dpi)
+    plt.close(fig)
 
 
 def get_free_port() -> int:
@@ -106,6 +163,22 @@ def test_latency_cpu_gpu_payloads(
 
     latencies: list[float] = []
 
+    time.sleep(3.0)  # allow some time for connections to establish
+
+    # warm-up
+    for _ in range(10):
+        if pub_hw == "gpu":
+            payload_host = np.asarray(payload)
+        else:
+            payload_host = payload
+        client.on_msg(payload_host)
+        while len(sink.recv_ts) <= len(latencies):
+            time.sleep(1e-5)
+        latencies.append(0.0)
+        latencies.clear()
+        sink.recv_ts.clear()
+        time.sleep(1e-3)
+
     for _ in range(REPETITIONS):
         t0 = time.perf_counter()
 
@@ -123,21 +196,38 @@ def test_latency_cpu_gpu_payloads(
 
         t1 = sink.recv_ts[len(latencies)]
         latencies.append(t1 - t0)
+        time.sleep(1e-3)  # avoid overwhelming the subscriber
 
     server.close()
     client.close()
     wait_port_free(port)
 
-    lat_us = [x * 1e6 for x in latencies]
+    lat_ms = [x * 1e3 for x in latencies]
+
+    # Save per-iteration plot
+    img_path = os.path.join(
+        RESULTS_DIR,
+        f"portal_latency_trace_{pub_hw}_to_{sub_hw}_{shape[0]}x{shape[1]}.png",
+    )
+    if VISUALIZE:
+        save_latency_plot(
+            lat_ms=lat_ms,
+            out_path=img_path,
+            title="Portal latency trace",
+            shape=shape,
+            pub_hw=pub_hw,
+            sub_hw=sub_hw,
+            nbytes=nbytes,
+        )
 
     stats = {
-        "min": min(lat_us),
-        "max": max(lat_us),
-        "mean": statistics.mean(lat_us),
-        "std": statistics.stdev(lat_us) if len(lat_us) > 1 else 0.0,
-        "median": statistics.median(lat_us),
-        "p95_best": statistics.quantiles(lat_us, n=20)[0],    # 5th percentile
-        "p95_worst": statistics.quantiles(lat_us, n=20)[18],  # 95th percentile
+        "min": min(lat_ms),
+        "max": max(lat_ms),
+        "mean": statistics.mean(lat_ms),
+        "std": statistics.stdev(lat_ms) if len(lat_ms) > 1 else 0.0,
+        "median": statistics.median(lat_ms),
+        "p95_best": statistics.quantiles(lat_ms, n=20)[0],    # 5th percentile
+        "p95_worst": statistics.quantiles(lat_ms, n=20)[18],  # 95th percentile
     }
 
     csv_path = os.path.join(
@@ -151,10 +241,10 @@ def test_latency_cpu_gpu_payloads(
             w.writerow([
                 "pub_hw", "sub_hw",
                 "height", "width", "bytes",
-                "min_us", "max_us",
-                "mean_us", "std_us",
-                "median_us",
-                "p95_best_us", "p95_worst_us",
+                "min_ms", "max_ms",
+                "mean_ms", "std_ms",
+                "median_ms",
+                "p95_best_ms", "p95_worst_ms",
             ])
         w.writerow([
             pub_hw, sub_hw,

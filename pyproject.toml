@@ -21,7 +21,6 @@ requires-python = ">=3.10"
 
 # Core dependencies
 dependencies = [
-    "jax[cuda12]>=0.6.2",
     "portal>=0.1.0",
     "PyYAML>=6.0.0",
 ]
@@ -37,6 +36,11 @@ dev = [
     "tomli"
 ]
 example = ["numpy>=1.21.0"]
+bench = [
+    "jax[cuda12]>=0.6.2",
+    "matplotlib>=3.10.8",
+    "numpy>=1.21.0"
+]
 
 # autopep8 configuration for 4-space indentation
 [tool.autopep8]

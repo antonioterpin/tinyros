@@ -208,3 +208,6 @@ __marimo__/
 
 # CSV
 *.csv
+
+# png
+*.png
