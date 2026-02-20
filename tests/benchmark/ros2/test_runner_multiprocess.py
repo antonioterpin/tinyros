@@ -17,8 +17,8 @@ import numpy as np
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 
-from benchmark_ros2.publisher_node import LatencyPublisher
-from benchmark_ros2.subscriber_node import LatencySubscriber
+from tests.benchmark.ros2.test_publisher_node import LatencyPublisher
+from tests.benchmark.ros2.test_subscriber_node import LatencySubscriber
 
 WARMUP = 10
 SLEEP_BETWEEN_ITERS_S = 1e-3
