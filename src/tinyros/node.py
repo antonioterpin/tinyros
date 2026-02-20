@@ -188,7 +188,8 @@ class TinyNode():
                 if client_key not in self.clients:
                     self.clients[client_key] = portal.Client(
                         client_key,
-                        name=f"{self.name} -> {subscription.actor}"
+                        name=f"{self.name} -> {subscription.actor}",
+                        maxinflight=int(1e6),  # unlimited
                     )
 
                 # Store the client_key and callback name for this topic
