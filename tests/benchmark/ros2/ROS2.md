@@ -1,7 +1,7 @@
 # ROS 2 Latency Benchmark
 
 This benchmark measures end-to-end message latency using **ROS 2**
-(publisher → subscriber) for different payload sizes.
+(publisher -> subscriber) for different payload sizes.
 
 It is intended as a baseline for comparison with the TinyROS and Portal
 benchmarks in this repository.

@@ -24,12 +24,12 @@ dependencies = [
     "portal>=0.1.0",
     "PyYAML>=6.0.0",
     "robo-goggles[jax,wandb]>=0.1.9",
-    "wandb>=0.25.0",
 ]
 
 # Optional dependencies
 [project.optional-dependencies]
 dev = [
+    "matplotlib>=3.10.8",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "hypothesis>=6.0.0",
@@ -37,11 +37,8 @@ dev = [
     "pre_commit==4.0.1",
     "tomli"
 ]
-example = ["numpy>=1.21.0"]
 bench = [
-    "jax[cuda12]>=0.6.2",
-    "matplotlib>=3.10.8",
-    "numpy>=1.21.0"
+    "jax[cuda12]>=0.6.2",  # keep only the GPU override
 ]
 
 # autopep8 configuration for 4-space indentation
