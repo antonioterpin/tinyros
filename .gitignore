@@ -211,3 +211,6 @@ __marimo__/
 
 # png
 *.png
+
+# wandb folder
+wandb/

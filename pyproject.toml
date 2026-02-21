@@ -23,6 +23,8 @@ requires-python = ">=3.10"
 dependencies = [
     "portal>=0.1.0",
     "PyYAML>=6.0.0",
+    "robo-goggles[jax,wandb]>=0.1.9",
+    "wandb>=0.25.0",
 ]
 
 # Optional dependencies
