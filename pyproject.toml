@@ -37,7 +37,7 @@ dev = [
     "pre_commit==4.0.1",
     "tomli"
 ]
-bench = [
+benchmark = [
     "jax[cuda12]>=0.6.2",  # keep only the GPU override
 ]
 

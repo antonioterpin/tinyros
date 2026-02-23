@@ -46,6 +46,6 @@ benchmarks in this repository.
 
    To run the benchmarks use these lines:
    ```bash
-   python -m tests.benchmark.ros2.runner
-   python -m tests.benchmark.ros2.runner_multiprocess
+   python -m tests.benchmark.ros2.test_runner_singleprocess
+   python -m tests.benchmark.ros2.test_runner_multiprocess
    ```

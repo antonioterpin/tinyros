@@ -3062,7 +3062,7 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-bench = [
+benchmark = [
     { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "python_full_version < '3.11'" },
     { name = "jax", version = "0.8.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "python_full_version >= '3.11'" },
 ]
@@ -3085,7 +3085,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "jax", extras = ["cuda12"], marker = "extra == 'bench'", specifier = ">=0.6.2" },
+    { name = "jax", extras = ["cuda12"], marker = "extra == 'benchmark'", specifier = ">=0.6.2" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.10.8" },
     { name = "portal", specifier = ">=0.1.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = "==4.0.1" },
@@ -3096,7 +3096,7 @@ requires-dist = [
     { name = "snowballstemmer", marker = "extra == 'dev'", specifier = "==2.2.0" },
     { name = "tomli", marker = "extra == 'dev'" },
 ]
-provides-extras = ["dev", "bench"]
+provides-extras = ["dev", "benchmark"]
 
 [package.metadata.requires-dev]
 dev = [
