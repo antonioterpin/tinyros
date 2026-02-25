@@ -150,7 +150,14 @@ class TinyNode():
         node_description = self.network_config.get_node_by_name(name)
         self.port = node_description.port
 
-        self.server = portal.Server(name=name + f"_{self.port}", port=self.port)
+        self.server = portal.Server(
+            name=name + f"_{self.port}",
+            port=self.port,
+            workers=32,
+            max_recv_queue=1_000_000,
+            max_send_queue=1_000_000,
+            logging=False,
+        )
 
         # Two-storage approach for publishing
         # topic -> list((client_key, cb_name))
@@ -189,7 +196,10 @@ class TinyNode():
                     self.clients[client_key] = portal.Client(
                         client_key,
                         name=f"{self.name} -> {subscription.actor}",
-                        maxinflight=int(1e6),  # unlimited
+                        maxinflight=1_000_000,
+                        max_recv_queue=1_000_000,
+                        max_send_queue=1_000_000,
+                        logging=False,
                     )
 
                 # Store the client_key and callback name for this topic

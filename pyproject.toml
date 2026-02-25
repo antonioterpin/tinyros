@@ -23,8 +23,11 @@ requires-python = ">=3.10"
 dependencies = [
     "portal>=0.1.0",
     "PyYAML>=6.0.0",
-    "robo-goggles[jax,wandb]>=0.1.9",
+    "robo-goggles[wandb,jax]",
 ]
+
+[tool.uv.sources]
+robo-goggles = { git = "https://github.com/antonioterpin/goggles.git", branch = "dev" }
 
 # Optional dependencies
 [project.optional-dependencies]

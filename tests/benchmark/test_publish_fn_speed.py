@@ -29,10 +29,10 @@ logger = gg.get_logger(
 
 gg.attach(
     gg.ConsoleHandler(
-        name="flowbench.console",
+        name="tinyros.console",
         level=gg.INFO,
     ),
-    scopes=["flowbench"],
+    scopes=["tinyros"],
 )
 
 # Global variable: latency ranges in ms (must be sorted)
@@ -119,12 +119,11 @@ class FastPublisher(TinyNode):
         start_time = time.perf_counter()
 
         logger.info("Starting publish benchmark")
-        futures = []
         for i in range(self.num_msgs):
             value = float(np.random.randn())
 
             t0 = time.perf_counter()
-            futures.append(self.publish("topic0", value))
+            self.publish("topic0", value)
             dt = (time.perf_counter() - t0) * 1000.0
             times.append(dt)
 
@@ -258,7 +257,7 @@ if __name__ == "__main__":
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     gg.attach(
         gg.WandBHandler(
-            project="flowbench",
+            project="tinyros-benchmarks",
             config={
                 "experiment": "benchmark_communication",
                 "num_msgs": args.num_msgs,
@@ -266,7 +265,7 @@ if __name__ == "__main__":
                 "run": timestamp,
             },
         ),
-        scopes=["flowbench"],
+        scopes=["tinyros"],
     )
 
     # Validate ranges
