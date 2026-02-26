@@ -23,11 +23,16 @@ requires-python = ">=3.10"
 dependencies = [
     "portal>=0.1.0",
     "PyYAML>=6.0.0",
+    "robo-goggles[wandb,jax]",
 ]
+
+[tool.uv.sources]
+robo-goggles = { git = "https://github.com/antonioterpin/goggles.git", branch = "dev" }
 
 # Optional dependencies
 [project.optional-dependencies]
 dev = [
+    "matplotlib>=3.10.8",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "hypothesis>=6.0.0",
@@ -35,7 +40,9 @@ dev = [
     "pre_commit==4.0.1",
     "tomli"
 ]
-example = ["numpy>=1.21.0"]
+benchmark = [
+    "jax[cuda12]>=0.6.2",  # keep only the GPU override
+]
 
 # autopep8 configuration for 4-space indentation
 [tool.autopep8]
@@ -107,6 +114,9 @@ filterwarnings = [
         "error",
         "ignore::UserWarning",
         "ignore::DeprecationWarning",
+]
+markers = [
+  "run_explicitly: marks tests that must be run explicitly (e.g. benchmarks)",
 ]
 
 [dependency-groups]
