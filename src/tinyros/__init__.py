@@ -1,11 +1,22 @@
-"""TinyROS."""
+"""TinyROS public API.
 
-from .node import (TinyNetworkConfig, TinyNode, TinyNodeDescription,
-                   TinySubscription)
+Nothing outside of this module's ``__all__`` is considered public.
+"""
 
-__version__ = "0.1.0"
+from .node import (
+    TinyNetworkConfig,
+    TinyNode,
+    TinyNodeDescription,
+    TinySubscription,
+)
+from .transport import TinyClient, TinyServer
+
+__version__ = "0.2.2"
 __all__ = [
-    "TinyNode",
-    "TinySubscription",
+    "TinyClient",
     "TinyNetworkConfig",
-    "TinyNodeDescription"]
+    "TinyNode",
+    "TinyNodeDescription",
+    "TinyServer",
+    "TinySubscription",
+]
