@@ -1,0 +1,861 @@
+"""TinyROS transport: minimal RPC wire between nodes.
+
+This module owns the network plumbing that replaces the former
+``portal``-based backend. It exposes two public classes:
+
+- :class:`TinyServer`: binds a TCP port, dispatches inbound RPC calls to
+  named callbacks registered via :meth:`TinyServer.bind`.
+- :class:`TinyClient`: connects to a :class:`TinyServer` and makes RPC
+  calls that return :class:`concurrent.futures.Future` objects.
+
+Wire protocol (framed with a 1-byte kind + 4-byte length header):
+
+- ``CALL``: inline pickle-protocol-5 payload with out-of-band buffers.
+- ``CALL_LARGE``: metadata frame whose single ndarray payload travels
+  through :mod:`multiprocessing.shared_memory`, bypassing the socket.
+- ``REPLY``: pickled ``(req_id, ok, result_or_exception)``.
+- ``BYE``: graceful disconnect announcement.
+
+The shared-memory side-channel activates when an ndarray payload reaches
+or exceeds ``TINYROS_SHM_THRESHOLD`` bytes (default 64 KiB). It applies
+only when client and server share a kernel (same host); set the threshold
+to ``0`` to disable it.
+
+See ``docs/guides/architecture/transport.md`` for the rationale behind
+the design and the threading model.
+"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import os
+import pickle
+import queue
+import socket
+import struct
+import threading
+import time
+from collections.abc import Callable
+from multiprocessing import shared_memory
+from typing import Any
+
+import goggles as gg
+import numpy as np
+
+_logger = gg.get_logger("tinyros.transport", scope="tinyros.transport")
+
+# --- Wire kinds -----------------------------------------------------------
+
+_MSG_CALL = 1
+_MSG_CALL_LARGE = 2
+_MSG_REPLY = 3
+_MSG_BYE = 4
+
+_HEADER_FMT = "!BI"
+_HEADER_SIZE = struct.calcsize(_HEADER_FMT)
+
+_DEFAULT_SHM_THRESHOLD = 65536
+_DEFAULT_POOL_WORKERS = 32
+_ACCEPT_POLL_S = 0.1
+_CONNECT_TIMEOUT_S = 10.0
+
+_SENTINEL = object()
+
+
+def _default_shm_threshold() -> int:
+    """Shared-memory threshold in bytes (overridable via env).
+
+    Returns:
+        Minimum ndarray nbytes that triggers the shm side-channel.
+    """
+    raw = os.getenv("TINYROS_SHM_THRESHOLD")
+    if raw is None:
+        return _DEFAULT_SHM_THRESHOLD
+    return max(0, int(raw))
+
+
+def _recvall(sock: socket.socket, n: int) -> bytes | None:
+    """Read exactly ``n`` bytes from ``sock``.
+
+    Args:
+        sock: Connected stream socket.
+        n: Number of bytes to read.
+
+    Returns:
+        The bytes read, or ``None`` if the peer closed the connection.
+    """
+    buf = bytearray()
+    while len(buf) < n:
+        try:
+            chunk = sock.recv(n - len(buf))
+        except (ConnectionResetError, OSError):
+            return None
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _frame(kind: int, body: bytes) -> bytes:
+    """Prepend the fixed-size header to a frame body.
+
+    Args:
+        kind: Message kind (one of the ``_MSG_*`` constants).
+        body: Payload bytes.
+
+    Returns:
+        Header + body, ready to send.
+    """
+    return struct.pack(_HEADER_FMT, kind, len(body)) + body
+
+
+# --- Packing helpers ------------------------------------------------------
+
+
+def _pack_oob(obj: Any) -> bytes:
+    """Pickle ``obj`` with protocol-5 out-of-band buffers.
+
+    The resulting byte stream is self-framing: callers can recover the
+    main pickle and the out-of-band buffers with :func:`_unpack_oob`.
+
+    Args:
+        obj: Python object to serialize.
+
+    Returns:
+        Concatenated main pickle and out-of-band buffers.
+    """
+    buffers: list[pickle.PickleBuffer] = []
+    main = pickle.dumps(obj, protocol=5, buffer_callback=buffers.append)
+    out = bytearray()
+    out += struct.pack("!I", len(main))
+    out += main
+    out += struct.pack("!I", len(buffers))
+    for buf in buffers:
+        mv = buf.raw()
+        out += struct.pack("!I", len(mv))
+        out += mv
+    return bytes(out)
+
+
+def _unpack_oob(payload: bytes) -> Any:
+    """Reverse :func:`_pack_oob`.
+
+    Args:
+        payload: Bytes produced by :func:`_pack_oob`.
+
+    Returns:
+        The deserialized Python object.
+    """
+    offset = 0
+    (main_len,) = struct.unpack_from("!I", payload, offset)
+    offset += 4
+    main = payload[offset : offset + main_len]
+    offset += main_len
+    (num_bufs,) = struct.unpack_from("!I", payload, offset)
+    offset += 4
+    buffers: list[bytes] = []
+    for _ in range(num_bufs):
+        (blen,) = struct.unpack_from("!I", payload, offset)
+        offset += 4
+        buffers.append(payload[offset : offset + blen])
+        offset += blen
+    return pickle.loads(main, buffers=buffers)
+
+
+def _pack_call_large(
+    req_id: int,
+    cb_name: str,
+    arr: np.ndarray,
+    shm_name: str,
+) -> bytes:
+    """Build a CALL_LARGE body referencing an ndarray in shared memory.
+
+    Args:
+        req_id: Monotonic request id used to correlate the reply.
+        cb_name: Name of the callback to invoke on the server.
+        arr: Source ndarray (its bytes have already been copied to shm).
+        shm_name: Name of the shared-memory block.
+
+    Returns:
+        Pickled metadata ready to wrap in a frame header.
+    """
+    meta: dict[str, Any] = {
+        "req_id": req_id,
+        "cb_name": cb_name,
+        "shm_name": shm_name,
+        "dtype": str(arr.dtype),
+        "shape": tuple(arr.shape),
+        "nbytes": int(arr.nbytes),
+    }
+    return pickle.dumps(meta, protocol=5)
+
+
+def _unpack_call_large(body: bytes) -> tuple[int, str, np.ndarray]:
+    """Reconstruct a CALL_LARGE body and materialize the ndarray.
+
+    Args:
+        body: Pickled metadata produced by :func:`_pack_call_large`.
+
+    Returns:
+        Triple ``(req_id, cb_name, ndarray)``.
+    """
+    meta = pickle.loads(body)
+    shm_name: str = meta["shm_name"]
+    dtype = np.dtype(meta["dtype"])
+    shape: tuple[int, ...] = tuple(meta["shape"])
+    shm = shared_memory.SharedMemory(name=shm_name)
+    try:
+        view = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+        arr = np.array(view, copy=True)
+    finally:
+        shm.close()
+        _try_unlink_shm(shm_name)
+    return int(meta["req_id"]), str(meta["cb_name"]), arr
+
+
+def _try_unlink_shm(name: str) -> None:
+    """Best-effort unlink of a named shm block.
+
+    Args:
+        name: Name of the shared-memory block to remove.
+    """
+    try:
+        shm = shared_memory.SharedMemory(name=name)
+    except (FileNotFoundError, OSError):
+        return
+    try:
+        shm.close()
+    except OSError:
+        pass
+    try:
+        shm.unlink()
+    except (FileNotFoundError, OSError):
+        pass
+
+
+# --- Server ---------------------------------------------------------------
+
+
+class _PendingCall:
+    """Container for an inbound call awaiting dispatch."""
+
+    __slots__ = ("conn", "req_id", "cb_name", "arg")
+
+    def __init__(
+        self,
+        conn: socket.socket,
+        req_id: int,
+        cb_name: str,
+        arg: Any,
+    ) -> None:
+        """Capture the fields needed to execute and reply to a call.
+
+        Args:
+            conn: Peer socket to send the reply on.
+            req_id: Monotonic request id.
+            cb_name: Callback method name registered on the server.
+            arg: Decoded argument to pass to the callback.
+        """
+        self.conn = conn
+        self.req_id = req_id
+        self.cb_name = cb_name
+        self.arg = arg
+
+
+class TinyServer:
+    """TCP RPC server.
+
+    Binds a listening socket, accepts client connections, and dispatches
+    incoming ``CALL`` frames to callbacks registered via :meth:`bind`.
+    Callbacks run on a bounded thread pool so slow handlers do not block
+    subsequent frames on the same connection.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        host: str,
+        port: int,
+        *,
+        workers: int = _DEFAULT_POOL_WORKERS,
+    ) -> None:
+        """Initialize the server.
+
+        Args:
+            name: Human-readable label used in log messages.
+            host: Interface address to bind on.
+            port: TCP port to bind on.
+            workers: Maximum concurrent callback executions.
+        """
+        self.name = name
+        self.host = host
+        self.port = port
+        self._callbacks: dict[str, Callable[..., Any]] = {}
+        self._pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix=f"tinyros-server-{name}",
+        )
+        self._server_sock: socket.socket | None = None
+        self._accept_thread: threading.Thread | None = None
+        self._reader_threads: list[threading.Thread] = []
+        self._conns: list[socket.socket] = []
+        self._conn_send_locks: dict[int, threading.Lock] = {}
+        self._conns_lock = threading.Lock()
+        self._running = False
+        self._started = False
+        self._state_lock = threading.Lock()
+
+    def bind(self, name: str, fn: Callable[..., Any]) -> None:
+        """Register a callback under ``name``.
+
+        Args:
+            name: Method name clients will invoke.
+            fn: Callable to execute when that method is called.
+        """
+        self._callbacks[name] = fn
+
+    def start(self, *, block: bool = False) -> None:
+        """Start accepting connections.
+
+        Args:
+            block: If True, block the caller thread; otherwise return
+                immediately and serve in background threads.
+        """
+        with self._state_lock:
+            if self._started:
+                return
+            self._started = True
+            self._running = True
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((self.host, self.port))
+        sock.listen(64)
+        sock.settimeout(_ACCEPT_POLL_S)
+        self._server_sock = sock
+
+        self._accept_thread = threading.Thread(
+            target=self._accept_loop,
+            daemon=True,
+            name=f"tinyros-accept-{self.name}",
+        )
+        self._accept_thread.start()
+
+        if block:
+            self._accept_thread.join()
+
+    def close(self, timeout: float | None = 2.0) -> None:
+        """Stop the server and release resources.
+
+        Args:
+            timeout: Per-thread join timeout; ``None`` waits indefinitely.
+        """
+        with self._state_lock:
+            if not self._running:
+                return
+            self._running = False
+
+        if self._server_sock is not None:
+            try:
+                self._server_sock.close()
+            except OSError:
+                pass
+            self._server_sock = None
+
+        with self._conns_lock:
+            conns = list(self._conns)
+        for conn in conns:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+        if self._accept_thread is not None:
+            self._accept_thread.join(timeout=timeout)
+        for t in self._reader_threads:
+            t.join(timeout=timeout)
+
+        self._pool.shutdown(wait=True, cancel_futures=True)
+
+    def _accept_loop(self) -> None:
+        """Accept inbound connections and spawn a reader per peer."""
+        assert self._server_sock is not None
+        while self._running:
+            try:
+                conn, _ = self._server_sock.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            with self._conns_lock:
+                self._conns.append(conn)
+                self._conn_send_locks[id(conn)] = threading.Lock()
+            reader = threading.Thread(
+                target=self._reader_loop,
+                args=(conn,),
+                daemon=True,
+                name=f"tinyros-reader-{self.name}-{conn.fileno()}",
+            )
+            reader.start()
+            self._reader_threads.append(reader)
+
+    def _reader_loop(self, conn: socket.socket) -> None:
+        """Read framed messages from ``conn`` and dispatch callbacks.
+
+        Args:
+            conn: Connected peer socket.
+        """
+        try:
+            while self._running:
+                header = _recvall(conn, _HEADER_SIZE)
+                if header is None:
+                    return
+                kind, length = struct.unpack(_HEADER_FMT, header)
+                body = _recvall(conn, length) if length else b""
+                if body is None:
+                    return
+                self._handle_frame(conn, kind, body)
+        finally:
+            self._drop_conn(conn)
+
+    def _handle_frame(
+        self, conn: socket.socket, kind: int, body: bytes
+    ) -> None:
+        """Dispatch a decoded frame to the right handler path.
+
+        Args:
+            conn: Peer socket the frame arrived on.
+            kind: Message kind from the frame header.
+            body: Frame body bytes.
+        """
+        if kind == _MSG_CALL:
+            req_id, cb_name, arg = _unpack_oob(body)
+            pending = _PendingCall(conn, int(req_id), str(cb_name), arg)
+            self._pool.submit(self._execute_call, pending)
+        elif kind == _MSG_CALL_LARGE:
+            req_id, cb_name, arr = _unpack_call_large(body)
+            pending = _PendingCall(conn, req_id, cb_name, arr)
+            self._pool.submit(self._execute_call, pending)
+        elif kind == _MSG_BYE:
+            return
+        else:
+            _logger.warning(f"{self.name}: unknown frame kind {kind}")
+
+    def _execute_call(self, call: _PendingCall) -> None:
+        """Run the callback and send a REPLY frame.
+
+        Args:
+            call: Captured call metadata.
+        """
+        ok = True
+        result: Any = None
+        fn = self._callbacks.get(call.cb_name)
+        if fn is None:
+            ok = False
+            result = AttributeError(
+                f"{self.name}: no callback named {call.cb_name!r}"
+            )
+        else:
+            try:
+                result = fn(call.arg)
+            except Exception as exc:
+                ok = False
+                result = exc
+        body = _pack_oob((call.req_id, ok, result))
+        frame = _frame(_MSG_REPLY, body)
+        lock = self._conn_send_locks.get(id(call.conn))
+        if lock is None:
+            return
+        with lock:
+            try:
+                call.conn.sendall(frame)
+            except OSError:
+                return
+
+    def _drop_conn(self, conn: socket.socket) -> None:
+        """Tear down a peer connection's bookkeeping.
+
+        Args:
+            conn: Peer socket being torn down.
+        """
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            conn.close()
+        except OSError:
+            pass
+        with self._conns_lock:
+            try:
+                self._conns.remove(conn)
+            except ValueError:
+                pass
+            self._conn_send_locks.pop(id(conn), None)
+
+
+# --- Client ---------------------------------------------------------------
+
+
+class _ClientMethod:
+    """Callable bound to a specific method name on a :class:`TinyClient`.
+
+    Returned by :meth:`TinyClient.__getattr__` so code can write
+    ``client.on_topic(msg)`` and get a :class:`concurrent.futures.Future`.
+    """
+
+    __slots__ = ("_client", "_name")
+
+    def __init__(self, client: TinyClient, name: str) -> None:
+        """Capture the client and the method name.
+
+        Args:
+            client: The owning :class:`TinyClient`.
+            name: Callback method name on the peer server.
+        """
+        self._client = client
+        self._name = name
+
+    def __call__(self, arg: Any) -> concurrent.futures.Future:
+        """Invoke the bound method asynchronously.
+
+        Args:
+            arg: Argument forwarded to the remote callback.
+
+        Returns:
+            A future that resolves with the callback's return value.
+        """
+        return self._client.call(self._name, arg)
+
+
+class TinyClient:
+    """TCP RPC client.
+
+    Connects to a :class:`TinyServer` and sends CALL / CALL_LARGE frames;
+    demultiplexes REPLY frames onto per-request futures. Attribute access
+    returns a callable proxy so the portal-style
+    ``client.on_topic(message)`` invocation pattern continues to work.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        name: str,
+        *,
+        shm_threshold: int | None = None,
+        connect_timeout: float = _CONNECT_TIMEOUT_S,
+    ) -> None:
+        """Initialize the client and connect to the server.
+
+        Args:
+            host: Server host to connect to.
+            port: Server TCP port.
+            name: Human-readable label used in log messages.
+            shm_threshold: Payload size (bytes) at or above which ndarray
+                arguments travel through shared memory. ``None`` uses
+                ``TINYROS_SHM_THRESHOLD`` or the 64 KiB default. ``0``
+                disables the shm fast path.
+            connect_timeout: Max seconds to wait for the server to accept
+                the connection.
+        """
+        self.host = host
+        self.port = port
+        self.name = name
+        self._shm_threshold = (
+            shm_threshold
+            if shm_threshold is not None
+            else _default_shm_threshold()
+        )
+        self._sock = self._connect(connect_timeout)
+        self._send_queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
+        self._pending: dict[int, concurrent.futures.Future] = {}
+        self._pending_lock = threading.Lock()
+        self._next_req_id = 0
+        self._req_id_lock = threading.Lock()
+        self._pending_shm: set[str] = set()
+        self._pending_shm_lock = threading.Lock()
+        self._running = True
+        self._shutdown_called = False
+        self._state_lock = threading.Lock()
+        self._send_thread = threading.Thread(
+            target=self._send_loop,
+            daemon=True,
+            name=f"tinyros-client-send-{name}",
+        )
+        self._recv_thread = threading.Thread(
+            target=self._recv_loop,
+            daemon=True,
+            name=f"tinyros-client-recv-{name}",
+        )
+        self._send_thread.start()
+        self._recv_thread.start()
+
+    def _connect(self, timeout: float) -> socket.socket:
+        """Connect to the server, retrying until ``timeout`` elapses.
+
+        Args:
+            timeout: Max seconds to keep retrying.
+
+        Returns:
+            The connected stream socket.
+
+        Raises:
+            ConnectionError: If no connection could be established.
+        """
+        deadline = time.monotonic() + timeout
+        last_exc: OSError | None = None
+        while time.monotonic() < deadline:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1.0)
+            try:
+                sock.connect((self.host, self.port))
+            except OSError as exc:
+                last_exc = exc
+                sock.close()
+                time.sleep(0.05)
+                continue
+            sock.settimeout(None)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            return sock
+        raise ConnectionError(
+            f"tinyros client {self.name!r} could not connect to "
+            f"{self.host}:{self.port} within {timeout:.1f}s: {last_exc}"
+        )
+
+    def __getattr__(self, name: str) -> _ClientMethod:
+        """Return a method proxy for attribute access.
+
+        Args:
+            name: Remote callback name.
+
+        Returns:
+            Callable that forwards its argument as an RPC call.
+        """
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return _ClientMethod(self, name)
+
+    def call(self, method: str, arg: Any) -> concurrent.futures.Future:
+        """Send an RPC call and return a future for the reply.
+
+        Args:
+            method: Callback name registered on the server.
+            arg: Argument forwarded to the callback.
+
+        Returns:
+            A future that resolves with the callback's return value.
+        """
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        if not self._running:
+            fut.set_exception(
+                ConnectionError(
+                    f"tinyros client {self.name!r} is no longer running"
+                )
+            )
+            return fut
+        with self._req_id_lock:
+            req_id = self._next_req_id
+            self._next_req_id += 1
+        with self._pending_lock:
+            self._pending[req_id] = fut
+        try:
+            frame, shm_name = self._encode_call(req_id, method, arg)
+        except Exception as exc:  # noqa: BLE001
+            with self._pending_lock:
+                self._pending.pop(req_id, None)
+            fut.set_exception(exc)
+            return fut
+        self._send_queue.put((frame, shm_name))
+        return fut
+
+    def _encode_call(
+        self, req_id: int, method: str, arg: Any
+    ) -> tuple[bytes, str | None]:
+        """Encode a single call as a framed byte string.
+
+        Args:
+            req_id: Monotonic request id.
+            method: Remote callback name.
+            arg: Argument to send.
+
+        Returns:
+            ``(frame, shm_name)``. ``shm_name`` is set only when the
+            large-payload fast path was used.
+        """
+        if (
+            self._shm_threshold > 0
+            and isinstance(arg, np.ndarray)
+            and arg.nbytes >= self._shm_threshold
+        ):
+            shm = shared_memory.SharedMemory(
+                create=True, size=max(1, arg.nbytes)
+            )
+            shm_name = shm.name
+            with self._pending_shm_lock:
+                self._pending_shm.add(shm_name)
+            try:
+                view = np.ndarray(arg.shape, dtype=arg.dtype, buffer=shm.buf)
+                view[...] = arg
+                body = _pack_call_large(req_id, method, arg, shm_name)
+            except BaseException:
+                try:
+                    shm.close()
+                finally:
+                    _try_unlink_shm(shm_name)
+                with self._pending_shm_lock:
+                    self._pending_shm.discard(shm_name)
+                raise
+            finally:
+                shm.close()
+            return _frame(_MSG_CALL_LARGE, body), shm_name
+        body = _pack_oob((req_id, method, arg))
+        return _frame(_MSG_CALL, body), None
+
+    def _send_loop(self) -> None:
+        """Drain the outbound queue and push frames to the socket."""
+        while True:
+            item = self._send_queue.get()
+            if item is _SENTINEL:
+                return
+            frame, shm_name = item
+            try:
+                self._sock.sendall(frame)
+            except OSError as exc:
+                _logger.warning(
+                    f"{self.name}: send failed ({exc}); tearing down"
+                )
+                self._fail_pending(shm_name)
+                return
+            else:
+                if shm_name is not None:
+                    with self._pending_shm_lock:
+                        self._pending_shm.discard(shm_name)
+
+    def _recv_loop(self) -> None:
+        """Read REPLY frames and complete the matching futures."""
+        while True:
+            header = _recvall(self._sock, _HEADER_SIZE)
+            if header is None:
+                self._fail_all_pending(
+                    ConnectionError(
+                        f"tinyros client {self.name!r}: server closed "
+                        f"the connection"
+                    )
+                )
+                return
+            kind, length = struct.unpack(_HEADER_FMT, header)
+            body = _recvall(self._sock, length) if length else b""
+            if body is None:
+                self._fail_all_pending(
+                    ConnectionError(
+                        f"tinyros client {self.name!r}: short read"
+                    )
+                )
+                return
+            if kind != _MSG_REPLY:
+                continue
+            try:
+                req_id, ok, result = _unpack_oob(body)
+            except Exception as exc:  # noqa: BLE001
+                _logger.error(f"{self.name}: failed to decode reply: {exc}")
+                continue
+            with self._pending_lock:
+                fut = self._pending.pop(int(req_id), None)
+            if fut is None:
+                continue
+            if ok:
+                fut.set_result(result)
+            else:
+                fut.set_exception(
+                    result
+                    if isinstance(result, BaseException)
+                    else RuntimeError(str(result))
+                )
+
+    def _fail_pending(self, shm_name: str | None) -> None:
+        """Fail one send item and mark the client unusable.
+
+        Args:
+            shm_name: Shared-memory block name for the failing send (if any).
+        """
+        self._running = False
+        names: list[str] = []
+        if shm_name is not None:
+            names.append(shm_name)
+        while True:
+            try:
+                item = self._send_queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is _SENTINEL:
+                continue
+            if isinstance(item, tuple) and item[1] is not None:
+                names.append(item[1])
+        for n in names:
+            _try_unlink_shm(n)
+        with self._pending_shm_lock:
+            for n in names:
+                self._pending_shm.discard(n)
+
+    def _fail_all_pending(self, exc: BaseException) -> None:
+        """Resolve every outstanding future with an exception.
+
+        Args:
+            exc: Exception to set on each pending future.
+        """
+        self._running = False
+        with self._pending_lock:
+            pending = dict(self._pending)
+            self._pending.clear()
+        for fut in pending.values():
+            if not fut.done():
+                fut.set_exception(exc)
+
+    def close(self, timeout: float | None = 2.0) -> None:
+        """Close the client and release resources.
+
+        Args:
+            timeout: Per-thread join timeout; ``None`` waits indefinitely.
+        """
+        with self._state_lock:
+            if self._shutdown_called:
+                return
+            self._shutdown_called = True
+            self._running = False
+
+        try:
+            self._send_queue.put((_frame(_MSG_BYE, b""), None))
+        except Exception:  # noqa: BLE001
+            pass
+        self._send_queue.put(_SENTINEL)
+        if self._send_thread.is_alive():
+            self._send_thread.join(timeout=timeout)
+
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        if self._recv_thread.is_alive():
+            self._recv_thread.join(timeout=timeout)
+
+        with self._pending_shm_lock:
+            stragglers = list(self._pending_shm)
+            self._pending_shm.clear()
+        for n in stragglers:
+            _try_unlink_shm(n)
+
+        self._fail_all_pending(
+            ConnectionError(
+                f"tinyros client {self.name!r} was closed"
+            )
+        )
