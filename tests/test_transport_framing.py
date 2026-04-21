@@ -29,9 +29,7 @@ from tinyros.transport import _pack_oob, _unpack_oob
 def test_small_scalars_roundtrip(payload: object) -> None:
     """Scalars and containers survive encode/decode unchanged."""
     decoded = _unpack_oob(_pack_oob(payload))
-    assert decoded == payload, (
-        f"expected {payload!r} after roundtrip, got {decoded!r}"
-    )
+    assert decoded == payload, f"expected {payload!r} after roundtrip, got {decoded!r}"
 
 
 @pytest.mark.parametrize(
@@ -43,9 +41,7 @@ def test_small_scalars_roundtrip(payload: object) -> None:
         ((0,), np.uint8),
     ],
 )
-def test_ndarray_roundtrip(
-    shape: tuple[int, ...], dtype: type[np.generic]
-) -> None:
+def test_ndarray_roundtrip(shape: tuple[int, ...], dtype: type[np.generic]) -> None:
     """ndarrays survive the oob path with shape, dtype, and content intact."""
     rng = np.random.default_rng(0)
     arr = rng.integers(-5, 5, size=shape).astype(dtype)
@@ -53,12 +49,12 @@ def test_ndarray_roundtrip(
     assert isinstance(
         decoded, np.ndarray
     ), f"expected ndarray after roundtrip, got {type(decoded).__name__}"
-    assert decoded.shape == shape, (
-        f"shape mismatch: expected {shape}, got {decoded.shape}"
-    )
-    assert decoded.dtype == np.dtype(dtype), (
-        f"dtype mismatch: expected {np.dtype(dtype)}, got {decoded.dtype}"
-    )
+    assert (
+        decoded.shape == shape
+    ), f"shape mismatch: expected {shape}, got {decoded.shape}"
+    assert decoded.dtype == np.dtype(
+        dtype
+    ), f"dtype mismatch: expected {np.dtype(dtype)}, got {decoded.dtype}"
     assert np.array_equal(
         decoded, arr
     ), "byte-identical payload expected after roundtrip"

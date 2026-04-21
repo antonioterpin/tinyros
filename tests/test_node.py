@@ -22,7 +22,7 @@ from tinyros import (
 
 
 def _make_config(ports: dict[str, int]) -> TinyNetworkConfig:
-    """Build a three-node config where ``pub`` fans out to ``sub_a`` / ``sub_b``.
+    """Build a three-node topology: ``pub`` fans out to ``sub_a`` / ``sub_b``.
 
     Args:
         ports: Mapping of node name to the ephemeral port to use.
@@ -179,8 +179,7 @@ def test_publish_unknown_topic_is_noop(three_free_ports: list[int]) -> None:
         time.sleep(0.1)
         futures = pub.publish("does-not-exist", 1)
         assert futures == [], (
-            f"publishing an unknown topic should yield no futures; "
-            f"got {futures}"
+            f"publishing an unknown topic should yield no futures; " f"got {futures}"
         )
         assert sub_a.received == [], "sub_a should not have received anything"
         assert sub_b.received == [], "sub_b should not have received anything"

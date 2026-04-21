@@ -293,9 +293,7 @@ def _run_case(label: str, build_payload: Callable[[], Any]) -> list[float]:
             sub_proc.join(timeout=5.0)
 
 
-def _save_csv(
-    rows: list[tuple[str, int, dict[str, float]]], out_path: Path
-) -> None:
+def _save_csv(rows: list[tuple[str, int, dict[str, float]]], out_path: Path) -> None:
     """Persist per-case summary stats as CSV for offline analysis.
 
     Args:
@@ -357,6 +355,4 @@ def test_interprocess_latency_matrix() -> None:
         _print_row(label, nbytes, stats)
         rows.append((label, nbytes, stats))
     _save_csv(rows, CSV_DIR / "interprocess_latency.csv")
-    assert len(rows) == len(_PAYLOADS), (
-        f"expected one row per payload, got {len(rows)}"
-    )
+    assert len(rows) == len(_PAYLOADS), f"expected one row per payload, got {len(rows)}"

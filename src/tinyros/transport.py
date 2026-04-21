@@ -423,9 +423,7 @@ class TinyServer:
         finally:
             self._drop_conn(conn)
 
-    def _handle_frame(
-        self, conn: socket.socket, kind: int, body: bytes
-    ) -> None:
+    def _handle_frame(self, conn: socket.socket, kind: int, body: bytes) -> None:
         """Dispatch a decoded frame to the right handler path.
 
         Args:
@@ -457,9 +455,7 @@ class TinyServer:
         fn = self._callbacks.get(call.cb_name)
         if fn is None:
             ok = False
-            result = AttributeError(
-                f"{self.name}: no callback named {call.cb_name!r}"
-            )
+            result = AttributeError(f"{self.name}: no callback named {call.cb_name!r}")
         else:
             try:
                 result = fn(call.arg)
@@ -568,9 +564,7 @@ class TinyClient:
         self.port = port
         self.name = name
         self._shm_threshold = (
-            shm_threshold
-            if shm_threshold is not None
-            else _default_shm_threshold()
+            shm_threshold if shm_threshold is not None else _default_shm_threshold()
         )
         self._sock = self._connect(connect_timeout)
         self._send_queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
@@ -654,9 +648,7 @@ class TinyClient:
         fut: concurrent.futures.Future = concurrent.futures.Future()
         if not self._running:
             fut.set_exception(
-                ConnectionError(
-                    f"tinyros client {self.name!r} is no longer running"
-                )
+                ConnectionError(f"tinyros client {self.name!r} is no longer running")
             )
             return fut
         with self._req_id_lock:
@@ -693,9 +685,7 @@ class TinyClient:
             and isinstance(arg, np.ndarray)
             and arg.nbytes >= self._shm_threshold
         ):
-            shm = shared_memory.SharedMemory(
-                create=True, size=max(1, arg.nbytes)
-            )
+            shm = shared_memory.SharedMemory(create=True, size=max(1, arg.nbytes))
             shm_name = shm.name
             with self._pending_shm_lock:
                 self._pending_shm.add(shm_name)
@@ -727,9 +717,7 @@ class TinyClient:
             try:
                 self._sock.sendall(frame)
             except OSError as exc:
-                _logger.warning(
-                    f"{self.name}: send failed ({exc}); tearing down"
-                )
+                _logger.warning(f"{self.name}: send failed ({exc}); tearing down")
                 self._fail_pending(shm_name)
                 return
             else:
@@ -753,9 +741,7 @@ class TinyClient:
             body = _recvall(self._sock, length) if length else b""
             if body is None:
                 self._fail_all_pending(
-                    ConnectionError(
-                        f"tinyros client {self.name!r}: short read"
-                    )
+                    ConnectionError(f"tinyros client {self.name!r}: short read")
                 )
                 return
             if kind != _MSG_REPLY:
@@ -855,7 +841,5 @@ class TinyClient:
             _try_unlink_shm(n)
 
         self._fail_all_pending(
-            ConnectionError(
-                f"tinyros client {self.name!r} was closed"
-            )
+            ConnectionError(f"tinyros client {self.name!r} was closed")
         )
