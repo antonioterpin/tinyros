@@ -1,36 +1,33 @@
-"""TinyROS Example Application.
+"""TinyROS example application.
 
-This example demonstrates a multi-process robotics application using TinyROS with:
+Demonstrates a multi-process robotics application using TinyROS with:
+
 - Scalar publisher at 0.5 Hz
 - Image publisher at 1 Hz
 - Control processor that aggregates data and publishes actuation at 0.5 Hz
 - Actuation feedback with noise
 
-Each actor is implemented as a class inheriting from TinyNode.
+Each actor is implemented as a class inheriting from :class:`TinyNode`.
 """
 
-import logging
+from __future__ import annotations
+
+import multiprocessing as mp
 import os
 import time
 
+import goggles as gg
 import numpy as np
-import portal
 import yaml
 
 from tinyros import TinyNetworkConfig, TinyNode
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+_logger = gg.get_logger("tinyros.example", scope="tinyros.example")
 
-# Load network configuration from YAML file
-config_path = os.path.join(os.path.dirname(__file__), 'network_config.yaml')
-with open(config_path, 'r') as file:
-    config = yaml.safe_load(file)
-NETWORK_CONFIG = TinyNetworkConfig.load_from_config(config)
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "network_config.yaml")
+with open(_CONFIG_PATH) as _f:
+    _CONFIG = yaml.safe_load(_f)
+NETWORK_CONFIG = TinyNetworkConfig.load_from_config(_CONFIG)
 
 
 class ScalarPublisher(TinyNode):
@@ -38,34 +35,23 @@ class ScalarPublisher(TinyNode):
 
     def __init__(self) -> None:
         """Initialize the ScalarPublisher."""
-        super().__init__(
-            name="ScalarPublisher",
-            network_config=NETWORK_CONFIG
-        )
-        logger.info(f"ScalarPublisher: Initialized on port {self.port}")
+        super().__init__(name="ScalarPublisher", network_config=NETWORK_CONFIG)
+        _logger.info(f"ScalarPublisher: initialized on port {self.port}")
 
     def run(self) -> None:
         """Run the scalar publisher at 0.5 Hz."""
-        rate = 0.5  # Hz
+        rate = 0.5
         sleep_time = 1.0 / rate
         counter = 0
-
         try:
             while True:
-                # Generate a simple scalar value (simulating sensor reading)
-                scalar_value = (
-                    np.sin(counter * 0.1) * 100 + np.random.normal(0, 5)
-                )
-
+                scalar_value = np.sin(counter * 0.1) * 100 + np.random.normal(0, 5)
                 self.publish("scalar_data", float(scalar_value))
-                logger.info(
-                    f"ScalarPublisher: Published scalar = {scalar_value:.2f}")
-
+                _logger.info(f"ScalarPublisher: published scalar = {scalar_value:.2f}")
                 counter += 1
                 time.sleep(sleep_time)
-
         except KeyboardInterrupt:
-            print("ScalarPublisher: Shutting down...")
+            _logger.info("ScalarPublisher: shutting down")
 
 
 class ImagePublisher(TinyNode):
@@ -73,39 +59,28 @@ class ImagePublisher(TinyNode):
 
     def __init__(self) -> None:
         """Initialize the ImagePublisher."""
-        super().__init__(
-            name="ImagePublisher",
-            network_config=NETWORK_CONFIG
-        )
-        logger.info(f"ImagePublisher: Initialized on port {self.port}")
+        super().__init__(name="ImagePublisher", network_config=NETWORK_CONFIG)
+        _logger.info(f"ImagePublisher: initialized on port {self.port}")
 
     def run(self) -> None:
         """Run the image publisher at 1 Hz."""
-        rate = 1.0  # Hz
+        rate = 1.0
         sleep_time = 1.0 / rate
         counter = 0
-
         try:
             while True:
-                # Generate a 16x16x2 image
                 image = np.random.randint(0, 255, (16, 16, 2), dtype=np.uint8)
-                # Add some pattern
-                image[:, :, 0] = (
-                    np.sin(counter * 0.1) * 127 + 128).astype(np.uint8)
-                image[:, :, 1] = (
-                    np.cos(counter * 0.1) * 127 + 128).astype(np.uint8)
-
+                image[:, :, 0] = (np.sin(counter * 0.1) * 127 + 128).astype(np.uint8)
+                image[:, :, 1] = (np.cos(counter * 0.1) * 127 + 128).astype(np.uint8)
                 self.publish("image_data", image)
-                logger.info(
-                    f"ImagePublisher: Published image {image.shape}, "
+                _logger.info(
+                    f"ImagePublisher: published image {image.shape}, "
                     f"sum = {np.sum(image)}"
                 )
-
                 counter += 1
                 time.sleep(sleep_time)
-
         except KeyboardInterrupt:
-            print("ImagePublisher: Shutting down...")
+            _logger.info("ImagePublisher: shutting down")
 
 
 class ControlProcessor(TinyNode):
@@ -113,72 +88,58 @@ class ControlProcessor(TinyNode):
 
     def __init__(self) -> None:
         """Initialize the ControlProcessor."""
-        super().__init__(
-            name="ControlProcessor",
-            network_config=NETWORK_CONFIG
-        )
-        # Data storage
+        super().__init__(name="ControlProcessor", network_config=NETWORK_CONFIG)
         self.latest_scalar = 0.0
         self.latest_image_sum = 0.0
         self.latest_feedback = 0.0
-
-        logger.info(f"ControlProcessor: Initialized on port {self.port}")
+        _logger.info(f"ControlProcessor: initialized on port {self.port}")
 
     def on_scalar_data(self, data: float) -> None:
         """Callback for scalar data.
 
         Args:
-            data (float): The received scalar data.
+            data: Received scalar value.
         """
         self.latest_scalar = data
-        logger.info(
-            f"ControlProcessor: Received scalar = {self.latest_scalar:.2f}")
+        _logger.info(f"ControlProcessor: received scalar = {self.latest_scalar:.2f}")
 
     def on_image_data(self, data: np.ndarray) -> None:
         """Callback for image data.
 
         Args:
-            data (np.ndarray): The received image data.
+            data: Received image array.
         """
         image = np.array(data)
         self.latest_image_sum = float(np.sum(image))
-        logger.info(
-            "ControlProcessor: Received image sum"
-            f" = {self.latest_image_sum:.0f}"
+        _logger.info(
+            f"ControlProcessor: received image sum = " f"{self.latest_image_sum:.0f}"
         )
 
     def on_feedback_data(self, data: float) -> None:
         """Callback for feedback data.
 
         Args:
-            data (float): The received feedback data.
+            data: Received feedback value.
         """
         self.latest_feedback = data
-        logger.info(
-            f"ControlProcessor: Received feedback = {self.latest_feedback:.2f}")
+        _logger.info(
+            f"ControlProcessor: received feedback = " f"{self.latest_feedback:.2f}"
+        )
 
     def run(self) -> None:
         """Run the control processor at 0.5 Hz."""
-        rate = 0.5  # Hz
+        rate = 0.5
         sleep_time = 1.0 / rate
-
         try:
             while True:
-                # Process the collected data
                 actuation_command = self.latest_scalar
-                actuation_command += self.latest_image_sum * \
-                    0.001  # Scale down image contribution
+                actuation_command += self.latest_image_sum * 0.001
                 actuation_command += self.latest_feedback * 0.1
-
                 self.publish("actuation_command", float(actuation_command))
-                logger.info(
-                    f"Published actuation = {actuation_command:.2f}"
-                )
-
+                _logger.info(f"published actuation = {actuation_command:.2f}")
                 time.sleep(sleep_time)
-
         except KeyboardInterrupt:
-            print("ControlProcessor: Shutting down...")
+            _logger.info("ControlProcessor: shutting down")
 
 
 class FeedbackProcessor(TinyNode):
@@ -186,108 +147,83 @@ class FeedbackProcessor(TinyNode):
 
     def __init__(self) -> None:
         """Initialize the FeedbackProcessor."""
-        super().__init__(
-            name="FeedbackProcessor",
-            network_config=NETWORK_CONFIG
-        )
-
-        logger.info(f"FeedbackProcessor: Initialized on port {self.port}")
+        super().__init__(name="FeedbackProcessor", network_config=NETWORK_CONFIG)
+        _logger.info(f"FeedbackProcessor: initialized on port {self.port}")
 
     def on_actuation_command(self, data: float) -> None:
         """Callback for actuation commands.
 
         Args:
-            data (float): The received actuation command.
+            data: Received actuation command.
         """
         actuation_value = float(data)
-        # Simulate actuator response with noise and some dynamics
         feedback_value = actuation_value * 0.95 + np.random.normal(0, 2)
-
         self.publish("actuation_feedback", float(feedback_value))
-        logger.info(
-            f"Actuation = {actuation_value:.2f} "
-            f"-> Feedback = {feedback_value:.2f}"
+        _logger.info(
+            f"actuation = {actuation_value:.2f} -> " f"feedback = {feedback_value:.2f}"
         )
 
     def run(self) -> None:
         """Run the feedback processor."""
         try:
-            # Keep the process alive
             while True:
                 time.sleep(0.1)
-
         except KeyboardInterrupt:
-            print("FeedbackProcessor: Shutting down...")
+            _logger.info("FeedbackProcessor: shutting down")
 
 
-# Process runner functions
 def run_scalar_publisher() -> None:
     """Run scalar publisher process."""
-    logger.info("Starting ScalarPublisher...")
-    publisher = ScalarPublisher()
-    publisher.run()
+    _logger.info("starting ScalarPublisher")
+    ScalarPublisher().run()
 
 
 def run_image_publisher() -> None:
     """Run image publisher process."""
-    logger.info("Starting ImagePublisher...")
-    publisher = ImagePublisher()
-    publisher.run()
+    _logger.info("starting ImagePublisher")
+    ImagePublisher().run()
 
 
 def run_control_processor() -> None:
     """Run control processor process."""
-    logger.info("Starting ControlProcessor...")
-    processor = ControlProcessor()
-    processor.run()
+    _logger.info("starting ControlProcessor")
+    ControlProcessor().run()
 
 
 def run_feedback_processor() -> None:
     """Run feedback processor process."""
-    logger.info("Starting FeedbackProcessor...")
-    processor = FeedbackProcessor()
-    processor.run()
+    _logger.info("starting FeedbackProcessor")
+    FeedbackProcessor().run()
 
 
 def main() -> None:
-    """Main entry point - starts all processes."""
-    logger.info("Starting TinyROS multi-process example...")
-
-    processes = []
-
+    """Start all nodes in subprocesses and wait for Ctrl+C."""
+    _logger.info("starting TinyROS multi-process example")
+    procs: list[mp.Process] = []
     try:
-        # Start all processes using portal.Process
-        scalar_proc = portal.Process(run_scalar_publisher, start=True)
-        processes.append(scalar_proc)
+        for target in (
+            run_scalar_publisher,
+            run_image_publisher,
+            run_feedback_processor,
+            run_control_processor,
+        ):
+            p = mp.Process(target=target, daemon=False)
+            p.start()
+            procs.append(p)
 
-        image_proc = portal.Process(run_image_publisher, start=True)
-        processes.append(image_proc)
-
-        feedback_proc = portal.Process(run_feedback_processor, start=True)
-        processes.append(feedback_proc)
-
-        control_proc = portal.Process(run_control_processor, start=True)
-        processes.append(control_proc)
-
-        print("All processes started. Press Ctrl+C to stop...")
-
-        # Wait for user interrupt
+        _logger.info("all processes started; Ctrl+C to stop")
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            print("Shutting down all processes...")
-
+            _logger.info("shutting down all processes")
     finally:
-        # Clean shutdown of all processes
-        for proc in processes:
-            try:
-                proc.kill()
-                proc.join(timeout=5.0)
-            except Exception as e:
-                print(f"Error shutting down process: {e}")
-
-        print("All processes stopped.")
+        for p in procs:
+            if p.is_alive():
+                p.terminate()
+        for p in procs:
+            p.join(timeout=5.0)
+        _logger.info("all processes stopped")
 
 
 if __name__ == "__main__":
