@@ -1,6 +1,6 @@
 """Fixtures for tinyros tests."""
 
-from typing import Callable
+from collections.abc import Callable
 
 import jax
 import numpy as np

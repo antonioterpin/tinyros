@@ -10,8 +10,8 @@ import os
 import socket
 import statistics
 import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Callable, Sequence
 
 import jax
 import matplotlib.pyplot as plt
@@ -67,12 +67,15 @@ def save_latency_plot(
         plt.axhline(median, linestyle="--", linewidth=1, color="red")
         plt.axhline(mean, linestyle="--", linewidth=1, color="green")
         plt.axhline(p95, linestyle="--", linewidth=1)
-        plt.legend(["latency",
-                    f"median={median:.3f}ms",
-                    f"mean={mean:.3f}ms",
-                    f"p95={p95:.3f}ms"],
-                   loc="best",
-                   )
+        plt.legend(
+            [
+                "latency",
+                f"median={median:.3f}ms",
+                f"mean={mean:.3f}ms",
+                f"p95={p95:.3f}ms",
+            ],
+            loc="best",
+        )
 
     plt.grid(True)
     fig.tight_layout()
@@ -125,9 +128,16 @@ class Sink:
 @pytest.mark.parametrize(
     "shape",
     [
-        (1, 1), (2, 2), (4, 4), (8, 8), (16, 16),
-        (32, 32), (64, 64), (128, 128),
-        (256, 256), (512, 512),
+        (1, 1),
+        (2, 2),
+        (4, 4),
+        (8, 8),
+        (16, 16),
+        (32, 32),
+        (64, 64),
+        (128, 128),
+        (256, 256),
+        (512, 512),
         (1024, 1024),
     ],
 )
@@ -233,7 +243,7 @@ def test_latency_cpu_gpu_payloads(
         "mean": statistics.mean(lat_ms),
         "std": statistics.stdev(lat_ms) if len(lat_ms) > 1 else 0.0,
         "median": statistics.median(lat_ms),
-        "p95_best": statistics.quantiles(lat_ms, n=20)[0],    # 5th percentile
+        "p95_best": statistics.quantiles(lat_ms, n=20)[0],  # 5th percentile
         "p95_worst": statistics.quantiles(lat_ms, n=20)[18],  # 95th percentile
     }
 
@@ -245,21 +255,37 @@ def test_latency_cpu_gpu_payloads(
     with open(csv_path, "a", newline="") as f:
         w = csv.writer(f)
         if write_header:
-            w.writerow([
-                "pub_hw", "sub_hw",
-                "height", "width", "bytes",
-                "min_ms", "max_ms",
-                "mean_ms", "std_ms",
-                "median_ms",
-                "p95_best_ms", "p95_worst_ms",
-            ])
-        w.writerow([
-            pub_hw, sub_hw,
-            shape[0], shape[1], nbytes,
-            stats["min"], stats["max"],
-            stats["mean"], stats["std"],
-            stats["median"],
-            stats["p95_best"], stats["p95_worst"],
-        ])
+            w.writerow(
+                [
+                    "pub_hw",
+                    "sub_hw",
+                    "height",
+                    "width",
+                    "bytes",
+                    "min_ms",
+                    "max_ms",
+                    "mean_ms",
+                    "std_ms",
+                    "median_ms",
+                    "p95_best_ms",
+                    "p95_worst_ms",
+                ]
+            )
+        w.writerow(
+            [
+                pub_hw,
+                sub_hw,
+                shape[0],
+                shape[1],
+                nbytes,
+                stats["min"],
+                stats["max"],
+                stats["mean"],
+                stats["std"],
+                stats["median"],
+                stats["p95_best"],
+                stats["p95_worst"],
+            ]
+        )
 
     assert len(latencies) == REPETITIONS, "Did not receive all messages"

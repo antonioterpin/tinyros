@@ -26,14 +26,13 @@ class LatencySubscriber(Node):
         self,
         sub_hw: str = "cpu",
         *,
-        ack_q: Optional[mp.Queue] = None,
+        ack_q: mp.Queue | None = None,
     ):
         """Initialize the subscriber node."""
         super().__init__("latency_subscriber")
 
         if sub_hw not in VALID_HW:
-            raise ValueError(
-                f"Invalid sub_hw: {sub_hw}. Must be one of {VALID_HW}.")
+            raise ValueError(f"Invalid sub_hw: {sub_hw}. Must be one of {VALID_HW}.")
         self.sub_hw = sub_hw
         self.recv_ts: list[float] = []
         self.ack_q = ack_q
@@ -47,9 +46,7 @@ class LatencySubscriber(Node):
 
     def on_msg(self, msg: Image) -> None:
         """Callback function for received messages."""
-        arr = np.frombuffer(
-            msg.data, dtype=np.float32).reshape(
-            (msg.height, msg.width))
+        arr = np.frombuffer(msg.data, dtype=np.float32).reshape((msg.height, msg.width))
 
         if self.sub_hw == "gpu":
             dev = jax.device_put(arr, jax.devices("gpu")[0])

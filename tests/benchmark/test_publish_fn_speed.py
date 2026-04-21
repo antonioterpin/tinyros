@@ -1,11 +1,16 @@
-"""Benchmark TinyROS communication behavior.
+r"""Benchmark TinyROS communication behavior.
 
 Goal:
 - Worker A: slow subscriber (sleep inside callback)
 - Worker B: fast publisher measuring publish() latency
 
 Usage:
-    GOGGLES_PORT=8374 uv run python -m tests.benchmark.test_publish_fn_speed --num-msgs 15000 --sleep-ms 100 --wandb
+
+.. code-block:: console
+
+    $ GOGGLES_PORT=8374 uv run python -m \
+        tests.benchmark.test_publish_fn_speed \
+        --num-msgs 15000 --sleep-ms 100 --wandb
 """
 
 from __future__ import annotations
@@ -136,8 +141,7 @@ class FastPublisher(TinyNode):
         logger.info("\n\n")
         logger.info("=== Publish Latency Statistics ===")
         logger.info(f"Total measurements: {len(times)}")
-        logger.info(
-            f"Total time: {(time.perf_counter() - start_time):.2f} seconds")
+        logger.info(f"Total time: {(time.perf_counter() - start_time):.2f} seconds")
 
         if len(times) > 0:
             min_latency = min(times)
@@ -167,14 +171,12 @@ class FastPublisher(TinyNode):
             logger.info("=== Latency Range Distribution ===")
             for i, threshold in enumerate(LATENCY_RANGES):
                 if i == 0:
-                    logger.info(
-                        f"  < {threshold:.3f} ms: {latency_counters[i]}")
+                    logger.info(f"  < {threshold:.3f} ms: {latency_counters[i]}")
                 else:
                     logger.info(
                         f"  [{LATENCY_RANGES[i-1]:.3f}, {threshold:.3f}) ms: {latency_counters[i]}"
                     )
-            logger.info(
-                f"  >= {LATENCY_RANGES[-1]:.3f} ms: {latency_counters[-1]}")
+            logger.info(f"  >= {LATENCY_RANGES[-1]:.3f} ms: {latency_counters[-1]}")
 
         return times
 
@@ -221,8 +223,7 @@ def main(*, num_msgs: int, sleep_ms: float, delay: float = 0.0) -> list[float]:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="TinyROS communication benchmark")
+    parser = argparse.ArgumentParser(description="TinyROS communication benchmark")
     parser.add_argument(
         "--num-msgs",
         type=int,
