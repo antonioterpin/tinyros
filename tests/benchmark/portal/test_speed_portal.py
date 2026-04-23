@@ -1,6 +1,18 @@
 """Benchmark tests for portal message passing speed with CPU/GPU payloads.
 
-Run with: pytest -m run_explicitly tests/benchmark/portal/test_speed_portal.py
+Requires the optional ``[portal]`` extra (TinyROS no longer depends on
+``portal`` at runtime; see ``docs/guides/architecture/transport.md``)::
+
+    uv sync --extra portal
+    # or
+    pip install -e '.[portal]'
+
+Run with::
+
+    pytest -m run_explicitly tests/benchmark/portal/test_speed_portal.py
+
+If ``portal`` is not installed the module is skipped cleanly via
+``pytest.importorskip``.
 """
 
 from __future__ import annotations
@@ -16,8 +28,12 @@ from pathlib import Path
 import jax
 import matplotlib.pyplot as plt
 import numpy as np
-import portal
 import pytest
+
+portal = pytest.importorskip(
+    "portal",
+    reason="Install the `[portal]` extra to run the portal parity benchmarks.",
+)
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 IMG_DIR = os.path.join(RESULTS_DIR, "images")

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tinyros"
-version = "0.2.2"
+version = "0.3.0"
 description = "A minimal operating system for robotics."
 readme = "README.md"
 license = { text = "MIT" }
@@ -39,7 +39,11 @@ dev = [
     "pre_commit==4.0.1",
     "basedpyright>=1.37.1",
 ]
-# Legacy portal backend (deprecated; see docs/guides/architecture/transport.md)
+# Benchmark parity target: `portal` is no longer a runtime backend
+# (see docs/guides/architecture/transport.md) but the comparison
+# benchmarks under tests/benchmark/portal/ and
+# tests/benchmark/test_publish_fn_speed.py still import it.
+# Install with: `uv sync --extra portal` or `pip install -e '.[portal]'`.
 portal = [
     "portal>=0.1.0",
 ]

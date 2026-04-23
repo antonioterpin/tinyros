@@ -4,6 +4,13 @@ Goal:
 - Worker A: slow subscriber (sleep inside callback)
 - Worker B: fast publisher measuring publish() latency
 
+Requires the optional ``[portal]`` extra (only ``portal.Process`` is used,
+to spawn the subscriber worker)::
+
+    uv sync --extra portal
+    # or
+    pip install -e '.[portal]'
+
 Usage:
 
 .. code-block:: console
@@ -11,6 +18,10 @@ Usage:
     $ GOGGLES_PORT=8374 uv run python -m \
         tests.benchmark.test_publish_fn_speed \
         --num-msgs 15000 --sleep-ms 100 --wandb
+
+Despite the ``test_`` filename this is a runnable script, not a pytest
+test. When collected by pytest it is skipped cleanly if ``portal`` is
+not installed.
 """
 
 from __future__ import annotations
@@ -22,9 +33,14 @@ from statistics import mean, median, stdev
 
 import goggles as gg
 import numpy as np
-import portal
+import pytest
 
-from tinyros import TinyNetworkConfig, TinyNode
+portal = pytest.importorskip(
+    "portal",
+    reason="Install the `[portal]` extra to run the portal-based benchmark.",
+)
+
+from tinyros import TinyNetworkConfig, TinyNode  # noqa: E402
 
 logger = gg.get_logger(
     "tinyros.benchmark",

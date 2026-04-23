@@ -21,6 +21,26 @@ default suite stays fast.
 uv run pytest -m run_explicitly tests/benchmark/
 ```
 
+### Optional benchmark dependencies
+
+| Suite | Path | Extra dependency | Install |
+|---|---|---|---|
+| TinyROS (native) | `benchmark/tinyros/` | none (core install is enough) | — |
+| Portal comparison | `benchmark/portal/`, `benchmark/test_publish_fn_speed.py` | [`portal`](https://pypi.org/project/portal/) | `uv sync --extra portal` or `pip install -e '.[portal]'` |
+| ROS 2 comparison | `benchmark/ros2/` | ROS 2 Humble (conda) | see [`benchmark/ros2/ROS2.md`](benchmark/ros2/ROS2.md) |
+
+The portal benchmark tests call `pytest.importorskip("portal")`, so
+running them without the `[portal]` extra yields a clean skip rather
+than a collection error. The ROS 2 directory is excluded from default
+collection via `norecursedirs` in `pyproject.toml`.
+
+To run only the portal parity benchmarks:
+
+```bash
+uv sync --extra portal
+uv run pytest -m run_explicitly tests/benchmark/portal/
+```
+
 ## Conventions
 
 - Every test function has a one-line docstring stating what contract it
