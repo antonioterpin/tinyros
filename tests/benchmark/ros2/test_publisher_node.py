@@ -19,8 +19,7 @@ class LatencyPublisher(Node):
         super().__init__("latency_publisher")
 
         if pub_hw not in VALID_HW:
-            raise ValueError(
-                f"Invalid pub_hw: {pub_hw}. Must be one of {VALID_HW}.")
+            raise ValueError(f"Invalid pub_hw: {pub_hw}. Must be one of {VALID_HW}.")
         self.pub_hw = pub_hw
 
         self.publisher = self.create_publisher(Image, "latency_topic", 10)

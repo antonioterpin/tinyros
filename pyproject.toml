@@ -21,8 +21,8 @@ requires-python = ">=3.10"
 
 # Core dependencies
 dependencies = [
-    "portal>=0.1.0",
     "PyYAML>=6.0.0",
+    "numpy>=1.24.0",
     "robo-goggles[wandb,jax]",
 ]
 
@@ -36,65 +36,16 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "hypothesis>=6.0.0",
-    "snowballstemmer==2.2.0",
     "pre_commit==4.0.1",
-    "tomli"
+    "basedpyright>=1.37.1",
+]
+# Legacy portal backend (deprecated; see docs/guides/architecture/transport.md)
+portal = [
+    "portal>=0.1.0",
 ]
 benchmark = [
     "jax[cuda12]>=0.6.2",  # keep only the GPU override
 ]
-
-# autopep8 configuration for 4-space indentation
-[tool.autopep8]
-max_line_length = 80
-indent_size = 4
-aggressive = 2
-in_place = true
-exclude = ".eggs,.git,.hg,.mypy_cache,.tox,.venv,_build,buck-out,build,dist"
-
-# isort configuration (updated for autopep8 compatibility)
-[tool.isort]
-line_length = 80
-indent = 4
-multi_line_output = 0
-force_single_line = false
-include_trailing_comma = false
-force_grid_wrap = 0
-use_parentheses = true
-ensure_newline_before_comments = true
-
-# MyPy configuration
-[tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-strict_equality = true
-show_error_codes = true
-explicit_package_bases = true
-mypy_path = "src"
-
-# Allow untyped decorators in test files for Hypothesis
-[[tool.mypy.overrides]]
-module = "tests.*"
-disallow_untyped_decorators = false
-
-# Pydocstyle configuration
-[tool.pydocstyle]
-convention = "google"
-match-dir = "^(?!tests).*"
-
-# Bandit security configuration
-[tool.bandit]
-exclude_dirs = ["tests", ".venv", "build", "dist"]
 
 # Pytest configuration
 [tool.pytest.ini_options]
@@ -110,6 +61,12 @@ addopts = [
         "--cov-report=xml",
 ]
 testpaths = ["tests"]
+# Exclude third-party comparison benchmarks that need their own runtimes
+# (rclpy, ROS 2) or an active portal installation; they are only relevant
+# when explicitly benchmarking against those stacks.
+norecursedirs = [
+    "tests/benchmark/ros2",
+]
 filterwarnings = [
         "error",
         "ignore::UserWarning",
@@ -118,6 +75,54 @@ filterwarnings = [
 markers = [
   "run_explicitly: marks tests that must be run explicitly (e.g. benchmarks)",
 ]
+
+# Ruff is the single source of truth for linting and formatting rules.
+[tool.ruff]
+line-length = 80
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "W505",   # doc-line-too-long (paired with max-doc-length)
+    "F",      # pyflakes (including unused imports F401)
+    "UP",     # pyupgrade (modern typing patterns)
+    "I",      # isort
+    "N",      # pep8-naming
+    "D",      # pydocstyle
+    "PL",     # pylint
+    "RUF",    # ruff-specific rules
+]
+
+ignore = [
+    "D100",    # Missing docstring in public module
+    "D104",    # Missing docstring in public package
+    "D105",    # Missing docstring in magic method
+    "PLR0913", # Too many arguments to function call
+    "PLR2004", # Magic value used in comparison
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR2004", "D"]  # Allow magic values and relaxed docstrings in tests
+"main.py" = ["D"]             # example script
+"tests/benchmark/ros2/*" = ["ALL"]  # external ROS2 comparison code
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pycodestyle]
+max-line-length = 80
+max-doc-length = 80
+
+# Basedpyright configuration
+[tool.basedpyright]
+include = ["src", "tests"]
+exclude = ["**/__pycache__", ".venv", "build", "dist", "tests/benchmark/ros2"]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingImports = false
+reportMissingTypeStubs = false
 
 [dependency-groups]
 dev = [

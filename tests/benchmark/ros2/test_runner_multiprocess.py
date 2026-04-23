@@ -9,7 +9,8 @@ import statistics
 import time
 from multiprocessing.synchronize import Event
 from pathlib import Path
-from typing import Sequence, Tuple
+from typing import Tuple
+from collections.abc import Sequence
 
 import jax
 import matplotlib.pyplot as plt
@@ -113,12 +114,15 @@ def save_latency_plot(
         plt.axhline(median, linestyle="--", linewidth=1, color="red")
         plt.axhline(mean, linestyle="--", linewidth=1, color="green")
         plt.axhline(p95, linestyle="--", linewidth=1)
-        plt.legend(["latency",
-                    f"median={median:.3f}ms",
-                    f"mean={mean:.3f}ms",
-                    f"p95={p95:.3f}ms"],
-                   loc="best",
-                   )
+        plt.legend(
+            [
+                "latency",
+                f"median={median:.3f}ms",
+                f"mean={mean:.3f}ms",
+                f"p95={p95:.3f}ms",
+            ],
+            loc="best",
+        )
 
     plt.grid(True)
     fig.tight_layout()
@@ -128,7 +132,7 @@ def save_latency_plot(
 
 def run_once_mp(
     *,
-    shape: Tuple[int, int],
+    shape: tuple[int, int],
     pub_hw: str,
     sub_hw: str,
 ) -> dict[str, float] | None:
@@ -228,7 +232,7 @@ def run_once_mp(
         "mean": statistics.mean(lat_ms),
         "std": statistics.stdev(lat_ms) if len(lat_ms) > 1 else 0.0,
         "median": statistics.median(lat_ms),
-        "p95_best": statistics.quantiles(lat_ms, n=20)[0],    # 5th percentile
+        "p95_best": statistics.quantiles(lat_ms, n=20)[0],  # 5th percentile
         "p95_worst": statistics.quantiles(lat_ms, n=20)[18],  # 95th percentile
     }
 
@@ -244,22 +248,38 @@ def run_once_mp(
     with open(csv_path, "a", newline="") as f:
         w = csv.writer(f)
         if write_header:
-            w.writerow([
-                "pub_hw", "sub_hw",
-                "height", "width", "bytes",
-                "min_ms", "max_ms",
-                "mean_ms", "std_ms",
-                "median_ms",
-                "p95_best_ms", "p95_worst_ms",
-            ])
-        w.writerow([
-            pub_hw, sub_hw,
-            shape[0], shape[1], nbytes,
-            stats["min"], stats["max"],
-            stats["mean"], stats["std"],
-            stats["median"],
-            stats["p95_best"], stats["p95_worst"],
-        ])
+            w.writerow(
+                [
+                    "pub_hw",
+                    "sub_hw",
+                    "height",
+                    "width",
+                    "bytes",
+                    "min_ms",
+                    "max_ms",
+                    "mean_ms",
+                    "std_ms",
+                    "median_ms",
+                    "p95_best_ms",
+                    "p95_worst_ms",
+                ]
+            )
+        w.writerow(
+            [
+                pub_hw,
+                sub_hw,
+                shape[0],
+                shape[1],
+                nbytes,
+                stats["min"],
+                stats["max"],
+                stats["mean"],
+                stats["std"],
+                stats["median"],
+                stats["p95_best"],
+                stats["p95_worst"],
+            ]
+        )
 
     return stats
 
@@ -268,6 +288,5 @@ if __name__ == "__main__":
     for pub_hw in PUB_HWS:
         for sub_hw in SUB_HWS:
             for shape in SHAPES:
-                print(
-                    f"Running ROS2 MP latency: {pub_hw} -> {sub_hw}, shape={shape}")
+                print(f"Running ROS2 MP latency: {pub_hw} -> {sub_hw}, shape={shape}")
                 run_once_mp(shape=shape, pub_hw=pub_hw, sub_hw=sub_hw)

@@ -1,86 +1,111 @@
 """TinyROS node implementation.
 
-This module provides the core TinyROS functionality including:
-- TinyNode: Base class for all ROS-like nodes
-- TinySubscription: Data class for subscription configuration
-- TinyNodeDescription: Data class for node network configuration
-- TinyNetworkConfig: Configuration loader and manager for network topology
+Provides the user-facing pub/sub API:
 
-The module uses the portal library for inter-process communication and
-supports dynamic topic-based publish/subscribe messaging.
+- :class:`TinyNode`: base class for all ROS-like nodes. A node binds a
+  server on its configured port, publishes to the servers of its
+  subscribers, and invokes subscriber callbacks by name.
+- :class:`TinySubscription`: descriptor for a single subscription.
+- :class:`TinyNodeDescription`: network-level description of a node.
+- :class:`TinyNetworkConfig`: immutable network topology.
+
+The wire lives in :mod:`tinyros.transport`; nodes are unaware of the
+underlying socket / shared-memory mechanics.
 """
+
+from __future__ import annotations
 
 import atexit
 import concurrent.futures
-import logging
 from dataclasses import dataclass
-from logging import getLogger
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
-import portal
+import goggles as gg
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = getLogger(__name__)
+from .transport import TinyClient, TinyServer
+
+_logger = gg.get_logger("tinyros.node", scope="tinyros.node")
 
 
 @dataclass(frozen=True)
 class TinySubscription:
-    """Represents a subscription to a topic by an actor.
+    """A subscription from one node to another.
 
     Args:
-        actor (str): The name of the subscribing actor/node
-        cb_name (str): The callback method name to invoke on the actor
+        actor: Name of the subscribing node.
+        cb_name: Callback method name to invoke on that node.
     """
+
     actor: str
     cb_name: str
 
 
 @dataclass(frozen=True)
 class TinyNodeDescription:
-    """Describes network connection details for a TinyROS node.
+    """Network connection details for a TinyROS node.
 
     Args:
-        port (int): The network port the node listens on
-        host (str): The host address where the node is running
+        port: TCP port the node listens on.
+        host: Host address where the node is running.
     """
+
     port: int
     host: str
 
 
 @dataclass(frozen=True)
 class TinyNetworkConfig:
-    """Configuration for the TinyROS network topology.
-
-    Manages the network configuration including node descriptions and
-    publish/subscribe connections between nodes.
+    """Immutable network topology.
 
     Args:
-        nodes (Dict[str, TinyNodeDescription]): Mapping of node names to their descriptions
-        connections (Dict[str, Dict[str, List[TinySubscription]]]): Network topology mapping
-            publisher_name -> topic_name -> list of subscriptions
+        nodes: Mapping of node name to its :class:`TinyNodeDescription`.
+        connections: Mapping of ``publisher_name -> topic_name ->
+            subscriptions``.
     """
-    nodes: Dict[str, TinyNodeDescription]
-    connections: Dict[str, Dict[str, List[TinySubscription]]]
+
+    nodes: dict[str, TinyNodeDescription]
+    connections: dict[str, dict[str, list[TinySubscription]]]
 
     def get_node_by_name(self, name: str) -> TinyNodeDescription:
-        """Get node description by name."""
+        """Look up a node by name.
+
+        Args:
+            name: Node name to look up.
+
+        Returns:
+            The matching :class:`TinyNodeDescription`.
+
+        Raises:
+            ValueError: If ``name`` is not in the config.
+        """
         if name not in self.nodes:
             raise ValueError(f"Node '{name}' not found in network config")
         return self.nodes[name]
 
     def get_publishers_for_node(
-            self, node_name: str) -> Dict[str, List[TinySubscription]]:
-        """Get all topics this node publishes and their subscribers."""
+        self, node_name: str
+    ) -> dict[str, list[TinySubscription]]:
+        """Get topics that ``node_name`` publishes and their subscribers.
+
+        Args:
+            node_name: Node whose outbound topics to return.
+
+        Returns:
+            Mapping of topic name to the list of subscriptions.
+        """
         return self.connections.get(node_name, {})
 
-    def get_subscribers_for_node(self, node_name: str) -> Dict[str, str]:
-        """Get all topics this node subscribes to and their callback names."""
-        subscribers = {}
-        for publisher_name, topics in self.connections.items():
+    def get_subscribers_for_node(self, node_name: str) -> dict[str, str]:
+        """Get topics that ``node_name`` subscribes to, keyed by topic.
+
+        Args:
+            node_name: Node whose inbound subscriptions to return.
+
+        Returns:
+            Mapping of topic name to callback name registered locally.
+        """
+        subscribers: dict[str, str] = {}
+        for topics in self.connections.values():
             for topic_name, subscriptions in topics.items():
                 for subscription in subscriptions:
                     if subscription.actor == node_name:
@@ -88,173 +113,151 @@ class TinyNetworkConfig:
         return subscribers
 
     @classmethod
-    def load_from_config(cls, config: dict) -> 'TinyNetworkConfig':
-        """Load network configuration from a dictionary.
+    def load_from_config(cls, config: dict) -> TinyNetworkConfig:
+        """Parse a dictionary into a :class:`TinyNetworkConfig`.
 
         Args:
-            config (dict): Configuration dictionary
-        """
-        # Parse nodes
-        nodes = {}
-        for node_name, node_data in config['nodes'].items():
-            nodes[node_name] = TinyNodeDescription(
-                port=node_data['port'],
-                host=node_data['host']
-            )
+            config: Raw config dictionary (typically from YAML).
 
-        # Parse connections
-        connections: Dict[str, Dict[str, List[TinySubscription]]] = {}
-        for publisher_name, topics in config['connections'].items():
-            connections[publisher_name] = {}
-            for topic_name, subscribers in topics.items():
-                connections[publisher_name][topic_name] = [
-                    TinySubscription(
-                        actor=sub['actor'],
-                        cb_name=sub['cb_name']
-                    )
+        Returns:
+            The parsed immutable network config.
+        """
+        nodes = {
+            node_name: TinyNodeDescription(
+                port=node_data["port"], host=node_data["host"]
+            )
+            for node_name, node_data in config["nodes"].items()
+        }
+        connections: dict[str, dict[str, list[TinySubscription]]] = {}
+        for publisher_name, topics in config["connections"].items():
+            connections[publisher_name] = {
+                topic_name: [
+                    TinySubscription(actor=sub["actor"], cb_name=sub["cb_name"])
                     for sub in subscribers
                 ]
-
+                for topic_name, subscribers in topics.items()
+            }
         return cls(nodes=nodes, connections=connections)
 
 
-class TinyNode():
+class TinyNode:
     """Base class for TinyROS nodes.
 
-    Provides publish/subscribe functionality using the portal library for
-    inter-process communication. Nodes can publish messages to topics and
-    subscribe to topics with callback methods.
+    A node:
 
-    The node automatically sets up connections based on the network configuration
-    and provides methods for publishing messages and handling subscriptions.
+    1. Reads its port/host from the network config.
+    2. Starts a server bound to every callback method named in the config.
+    3. Opens one client per distinct ``(host, port)`` it publishes to.
+    4. Dispatches :meth:`publish` to every subscription for the topic.
     """
 
     def __init__(
         self,
         name: str,
-        network_config: TinyNetworkConfig
-    ):
-        """Initialize a TinyROS node.
+        network_config: TinyNetworkConfig,
+        *,
+        bind_host: str = "0.0.0.0",
+    ) -> None:
+        """Initialize the node.
 
         Args:
-            name (str): The name of this node in the network configuration
-            network_config (TinyNetworkConfig): The network topology configuration
+            name: Node name; must appear in ``network_config.nodes``.
+            network_config: Immutable topology describing the network.
+            bind_host: Local interface to bind the server on. Defaults to
+                all interfaces so remote nodes can reach us.
 
         Raises:
-            ValueError: If the node name is not found in the network configuration
+            ValueError: If ``name`` is not present in the config.
         """
         self.name = name
         self.network_config = network_config
-
-        # Get port from network configuration
         node_description = self.network_config.get_node_by_name(name)
         self.port = node_description.port
 
-        self.server = portal.Server(
-            name=name + f"_{self.port}",
+        self.server = TinyServer(
+            name=f"{name}_{self.port}",
+            host=bind_host,
             port=self.port,
-            workers=32,
-            max_recv_queue=1_000_000,
-            max_send_queue=1_000_000,
-            logging=False,
         )
 
-        # Two-storage approach for publishing
-        # topic -> list((client_key, cb_name))
-        self.topic_calls: Dict[str, List[Tuple[str, str]]] = {}
-        # client_key -> client
-        self.clients: Dict[str, portal.Client] = {}
+        self.topic_calls: dict[str, list[tuple[str, str]]] = {}
+        self.clients: dict[str, TinyClient] = {}
 
-        # Set up connections for topics this node publishes
         self._setup_publishing()
-
-        # Set up callback bindings for topics this node subscribes to
         self._setup_subscriptions()
 
-        # Ensure proper shutdown
         atexit.register(self.shutdown)
-
-        # Start the server
         self.server.start(block=False)
 
     def _setup_publishing(self) -> None:
-        """Set up publishing connections for topics this node publishes."""
-        published_topics = self.network_config.get_publishers_for_node(
-            self.name)
-
+        """Open clients to each peer this node publishes to."""
+        published_topics = self.network_config.get_publishers_for_node(self.name)
         for topic_name, subscriptions in published_topics.items():
             self.topic_calls[topic_name] = []
-
             for subscription in subscriptions:
-                # Get subscriber node details
                 subscriber_node = self.network_config.get_node_by_name(
-                    subscription.actor)
+                    subscription.actor
+                )
                 client_key = f"{subscriber_node.host}:{subscriber_node.port}"
-
-                # Create client if it doesn't exist
                 if client_key not in self.clients:
-                    self.clients[client_key] = portal.Client(
-                        client_key,
+                    self.clients[client_key] = TinyClient(
+                        host=subscriber_node.host,
+                        port=subscriber_node.port,
                         name=f"{self.name} -> {subscription.actor}",
-                        maxinflight=1_000_000,
-                        max_recv_queue=1_000_000,
-                        max_send_queue=1_000_000,
-                        logging=False,
                     )
-
-                # Store the client_key and callback name for this topic
-                self.topic_calls[topic_name].append(
-                    (client_key, subscription.cb_name))
-
-        logger.info(
-            f"{self.name}: Set up publishing for topics:"
-            f" {list(self.topic_calls.keys())}")
-        logger.info(
-            f"{self.name}: Created {len(self.clients)} client connections")
+                self.topic_calls[topic_name].append((client_key, subscription.cb_name))
+        _logger.info(
+            f"{self.name}: publishing topics "
+            f"{list(self.topic_calls.keys())} via {len(self.clients)} "
+            f"clients"
+        )
 
     def _setup_subscriptions(self) -> None:
-        """Bind callback methods for topics this node subscribes to."""
-        subscribed_topics = self.network_config.get_subscribers_for_node(
-            self.name)
-
+        """Bind server callbacks for topics this node subscribes to."""
+        subscribed_topics = self.network_config.get_subscribers_for_node(self.name)
         for topic_name, callback_name in subscribed_topics.items():
             if hasattr(self, callback_name):
                 self.server.bind(callback_name, getattr(self, callback_name))
-                logger.info(
-                    f"{self.name}: Bound callback '{callback_name}' "
-                    f"for topic '{topic_name}'"
+                _logger.info(
+                    f"{self.name}: bound '{callback_name}' for " f"topic '{topic_name}'"
                 )
             else:
-                logger.error(
-                    f"{self.name}: Callback method '{callback_name}' "
-                    "not found!"
+                _logger.error(
+                    f"{self.name}: callback method '{callback_name}' " "not found"
                 )
 
-    def publish(
-            self, topic: str, message: Any) -> List[concurrent.futures.Future]:
-        """Publish a message to all subscribers of a topic."""
-        if topic not in self.topic_calls:
-            logger.warning(f"{self.name}: No subscribers for topic '{topic}'")
-            return []
+    def publish(self, topic: str, message: Any) -> list[concurrent.futures.Future]:
+        """Publish ``message`` to every subscriber of ``topic``.
 
-        futures = []
+        Args:
+            topic: Topic name declared in the network config.
+            message: Payload forwarded to each subscriber's callback.
+
+        Returns:
+            One future per subscriber, resolving with the callback's
+            return value (typically ``None``).
+        """
+        if topic not in self.topic_calls:
+            _logger.warning(f"{self.name}: no subscribers for '{topic}'")
+            return []
+        futures: list[concurrent.futures.Future] = []
         for client_key, cb_name in self.topic_calls[topic]:
             try:
                 client = self.clients[client_key]
-                futures.append(getattr(client, cb_name)(message))
-            except Exception as e:
-                logger.error(f"{self.name}: Failed to send message - {e}")
-
+                futures.append(client.call(cb_name, message))
+            except Exception as exc:  # noqa: BLE001
+                _logger.error(f"{self.name}: failed to send message - {exc}")
         return futures
 
     def shutdown(self) -> None:
-        """Shutdown the node and close all connections."""
-        logger.info(f"{self.name}: Shutting down...")
-        self.server.close()
-
-        # Close all clients
+        """Shut the server and every outbound client down."""
+        _logger.info(f"{self.name}: shutting down")
+        try:
+            self.server.close()
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(f"{self.name}: error closing server: {exc}")
         for client in self.clients.values():
             try:
                 client.close()
-            except Exception as e:
-                logger.warning(f"{self.name}: Error closing client: {e}")
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(f"{self.name}: error closing client: {exc}")
