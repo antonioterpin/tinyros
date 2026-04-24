@@ -72,6 +72,7 @@ _DEFAULT_MAX_FRAME_BYTES = 256 * 1024 * 1024
 _ACCEPT_POLL_S = 0.1
 _READ_POLL_S = 1.0
 _CONNECT_TIMEOUT_S = 10.0
+_RECONNECT_TIMEOUT_S = 2.0
 
 _SENTINEL = object()
 
@@ -700,6 +701,7 @@ class TinyClient:
         shm_threshold: int | None = None,
         max_frame_bytes: int | None = None,
         connect_timeout: float = _CONNECT_TIMEOUT_S,
+        reconnect_timeout: float = _RECONNECT_TIMEOUT_S,
     ) -> None:
         """Initialize the client and connect to the server.
 
@@ -716,7 +718,12 @@ class TinyClient:
                 Reply frames claiming more tear the client down instead of
                 buffering.
             connect_timeout: Max seconds to wait for the server to accept
-                the connection.
+                the initial connection.
+            reconnect_timeout: Max seconds to retry reconnecting after
+                a send failure before giving up and tearing the client
+                down. The send loop attempts one reconnect per detected
+                socket failure; callers who want long-running resilience
+                can retry across client lifetimes.
         """
         self.host = host
         self.port = port
@@ -729,6 +736,7 @@ class TinyClient:
             if max_frame_bytes is not None
             else _default_max_frame_bytes()
         )
+        self._reconnect_timeout = reconnect_timeout
         self._sock = self._connect(connect_timeout)
         self._sock.settimeout(_READ_POLL_S)
         self._send_queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
@@ -747,13 +755,8 @@ class TinyClient:
             daemon=True,
             name=f"tinyros-client-send-{name}",
         )
-        self._recv_thread = threading.Thread(
-            target=self._recv_loop,
-            daemon=True,
-            name=f"tinyros-client-recv-{name}",
-        )
         self._send_thread.start()
-        self._recv_thread.start()
+        self._recv_thread = self._start_recv_thread(self._sock)
 
     def _connect(self, timeout: float) -> socket.socket:
         """Connect to the server, retrying until ``timeout`` elapses.
@@ -888,7 +891,18 @@ class TinyClient:
         return _frame(_MSG_CALL, body), None
 
     def _send_loop(self) -> None:
-        """Drain the outbound queue and push frames to the socket."""
+        """Drain the outbound queue and push frames to the socket.
+
+        On ``OSError`` the loop fails every pending future (the current
+        frame included -- there is no safe way to know whether the
+        server started processing it), discards any frames that were
+        queued before the failure (their futures are already failed, so
+        transmitting them on a reconnected socket would be a stale
+        side-effect), and attempts a single best-effort reconnect. If
+        the reconnect succeeds the loop resumes on the new socket;
+        callers who need the failed frame re-delivered must re-issue
+        it. If the reconnect fails the client is torn down permanently.
+        """
         while True:
             item = self._send_queue.get()
             if item is _SENTINEL:
@@ -897,23 +911,82 @@ class TinyClient:
             try:
                 self._sock.sendall(frame)
             except OSError as exc:
-                _logger.warning(f"{self.name}: send failed ({exc}); tearing down")
-                self._fail_all_pending(
-                    ConnectionError(
-                        f"tinyros client {self.name!r}: send failed ({exc})"
-                    )
+                _logger.warning(f"{self.name}: send failed ({exc})")
+                exc_for_pending = ConnectionError(
+                    f"tinyros client {self.name!r}: send failed ({exc})"
                 )
-                self._shutdown_io()
-                return
+                self._fail_all_pending(exc_for_pending)
+                # Server never consumed this frame, so unlink its shm
+                # block ourselves before draining further queued frames.
+                self._unlink_orphan_shm(shm_name)
+                self._drain_queued_sends()
+                if self._shutdown_called or not self._try_reconnect():
+                    self._stop_running(exc_for_pending)
+                    self._shutdown_io()
+                    return
+                continue
             else:
                 if shm_name is not None:
+                    # Server is responsible for unlinking on success;
+                    # just release our tracking entry.
                     with self._pending_shm_lock:
                         self._pending_shm.discard(shm_name)
 
-    def _recv_loop(self) -> None:
-        """Read REPLY frames and complete the matching futures."""
+    def _unlink_orphan_shm(self, shm_name: str | None) -> None:
+        """Release a shm block the server will never consume.
+
+        Used on the send-failure path where the receiving server never
+        got the CALL_LARGE frame (or the frame was dropped before being
+        delivered), so the unlink responsibility falls back on the
+        client. No-op for inline frames.
+
+        Args:
+            shm_name: Name of the shm block to release; ``None`` for
+                inline frames.
+        """
+        if shm_name is None:
+            return
+        with self._pending_shm_lock:
+            if shm_name not in self._pending_shm:
+                return
+            self._pending_shm.discard(shm_name)
+        _try_unlink_shm(shm_name)
+
+    def _drain_queued_sends(self) -> None:
+        """Drop every frame still queued behind a failed send.
+
+        Their futures have already been failed by ``_fail_all_pending``;
+        re-sending them on a reconnected socket would only produce
+        server-side side effects and orphan REPLY frames. Sentinels are
+        put back so ``close()`` can still terminate the loop.
+        """
+        requeue_sentinel = False
         while True:
-            header = _recvall(self._sock, _HEADER_SIZE, self._running.is_set)
+            try:
+                item = self._send_queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is _SENTINEL:
+                requeue_sentinel = True
+                continue
+            _frame, shm_name = item
+            self._unlink_orphan_shm(shm_name)
+        if requeue_sentinel:
+            self._send_queue.put(_SENTINEL)
+
+    def _recv_loop(self, sock: socket.socket) -> None:
+        """Read REPLY frames from ``sock`` and complete matching futures.
+
+        Bound to a specific socket so a reconnect can spawn a fresh
+        recv thread on the new socket without racing the old one.
+        Does not clear ``_running`` -- the client stays reusable for
+        the next send, which may trigger a reconnect attempt.
+
+        Args:
+            sock: The connected socket this loop reads from.
+        """
+        while True:
+            header = _recvall(sock, _HEADER_SIZE, self._running.is_set)
             if header is None:
                 if self._running.is_set():
                     self._fail_all_pending(
@@ -929,7 +1002,7 @@ class TinyClient:
                     f"{self.name}: oversized reply frame ({length} bytes, "
                     f"max {self._max_frame_bytes}); tearing down"
                 )
-                self._fail_all_pending(
+                self._stop_running(
                     ConnectionError(
                         f"tinyros client {self.name!r}: oversized reply "
                         f"({length} bytes)"
@@ -937,7 +1010,7 @@ class TinyClient:
                 )
                 self._shutdown_io()
                 return
-            body = _recvall(self._sock, length, self._running.is_set) if length else b""
+            body = _recvall(sock, length, self._running.is_set) if length else b""
             if body is None:
                 if self._running.is_set():
                     self._fail_all_pending(
@@ -967,8 +1040,35 @@ class TinyClient:
     def _fail_all_pending(self, exc: BaseException) -> None:
         """Resolve every outstanding future with an exception.
 
+        Does not change the client's running state; callers intending
+        a full teardown must clear ``_running`` via :meth:`_stop_running`
+        so a ``call()`` racing with teardown sees the cleared flag
+        under ``_pending_lock`` instead of orphaning a future. Leaving
+        ``_running`` alone means a transient socket failure can still
+        be recovered by :meth:`_try_reconnect`.
+
         Args:
             exc: Exception to set on each pending future.
+        """
+        with self._pending_lock:
+            pending = dict(self._pending)
+            self._pending.clear()
+        for fut in pending.values():
+            if not fut.done():
+                fut.set_exception(exc)
+
+    def _stop_running(self, exc: BaseException) -> None:
+        """Clear ``_running`` atomically with draining ``_pending``.
+
+        Used on permanent-teardown paths (close, reconnect-failed,
+        oversized reply). ``call()`` re-checks ``_running`` under
+        ``_pending_lock`` before inserting, so clearing the flag here
+        -- while the lock is held around the final drain -- is what
+        keeps a racing caller from leaving an orphan future behind.
+
+        Args:
+            exc: Exception to set on each pending future drained by
+                this call.
         """
         with self._pending_lock:
             self._running.clear()
@@ -977,6 +1077,50 @@ class TinyClient:
         for fut in pending.values():
             if not fut.done():
                 fut.set_exception(exc)
+
+    def _try_reconnect(self) -> bool:
+        """Replace the dead socket with a fresh connection.
+
+        Closes the old socket (waking the old recv thread), waits
+        briefly for the old recv to exit, then calls :meth:`_connect`
+        with the reconnect timeout. On success swaps in the new
+        socket and spawns a fresh recv thread bound to it.
+
+        Returns:
+            ``True`` if the new socket is live and a new recv thread
+            is running; ``False`` if the reconnect budget expired.
+        """
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        if self._recv_thread.is_alive():
+            self._recv_thread.join(timeout=1.0)
+        try:
+            new_sock = self._connect(self._reconnect_timeout)
+        except ConnectionError as exc:
+            _logger.warning(f"{self.name}: reconnect failed: {exc}")
+            return False
+        new_sock.settimeout(_READ_POLL_S)
+        self._sock = new_sock
+        self._recv_thread = self._start_recv_thread(new_sock)
+        _logger.info(f"{self.name}: reconnected to {self.host}:{self.port}")
+        return True
+
+    def _start_recv_thread(self, sock: socket.socket) -> threading.Thread:
+        """Spawn a recv thread bound to ``sock``. Returns the started thread."""
+        t = threading.Thread(
+            target=self._recv_loop,
+            args=(sock,),
+            daemon=True,
+            name=f"tinyros-client-recv-{self.name}",
+        )
+        t.start()
+        return t
 
     def _shutdown_io(self) -> None:
         """Release the socket and wake the send loop without joining threads.
@@ -1010,7 +1154,11 @@ class TinyClient:
             if self._shutdown_called:
                 return
             self._shutdown_called = True
-            self._running.clear()
+
+        # Atomically block new call()s and drain anything already in
+        # flight so a racing caller can't slip a future in after the
+        # recv loop has been joined.
+        self._stop_running(ConnectionError(f"tinyros client {self.name!r} was closed"))
 
         try:
             self._send_queue.put((_frame(_MSG_BYE, b""), None))
@@ -1036,7 +1184,3 @@ class TinyClient:
             self._pending_shm.clear()
         for n in stragglers:
             _try_unlink_shm(n)
-
-        self._fail_all_pending(
-            ConnectionError(f"tinyros client {self.name!r} was closed")
-        )
