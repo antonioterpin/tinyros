@@ -252,16 +252,35 @@ def _pack_call_large(
     return pickle.dumps(meta, protocol=5)
 
 
-def _unpack_call_large(body: bytes) -> tuple[int, str, np.ndarray]:
-    """Reconstruct a CALL_LARGE body and materialize the ndarray.
+def _parse_call_large_meta(body: bytes) -> tuple[int, str, dict[str, Any]]:
+    """Parse the metadata portion of a CALL_LARGE body.
+
+    Split out from :func:`_unpack_call_large` so the worker can surface
+    an ``ok=False`` reply when the shm block itself is missing or
+    malformed: by the time materialization fails we already know the
+    ``req_id`` and ``cb_name`` to address the reply to.
 
     Args:
         body: Pickled metadata produced by :func:`_pack_call_large`.
 
     Returns:
-        Triple ``(req_id, cb_name, ndarray)``.
+        Triple ``(req_id, cb_name, meta)``; ``meta`` is the full dict
+        (including ``shm_name``/``dtype``/``shape``) so callers can
+        continue into :func:`_materialize_call_large`.
     """
     meta = pickle.loads(body)
+    return int(meta["req_id"]), str(meta["cb_name"]), meta
+
+
+def _materialize_call_large(meta: dict[str, Any]) -> np.ndarray:
+    """Map the shm block named in ``meta`` and copy its contents out.
+
+    Args:
+        meta: The dict returned by :func:`_parse_call_large_meta`.
+
+    Returns:
+        A freshly-copied ndarray of the declared ``shape``/``dtype``.
+    """
     shm_name: str = meta["shm_name"]
     dtype = np.dtype(meta["dtype"])
     shape: tuple[int, ...] = tuple(meta["shape"])
@@ -272,7 +291,20 @@ def _unpack_call_large(body: bytes) -> tuple[int, str, np.ndarray]:
     finally:
         shm.close()
         _try_unlink_shm(shm_name)
-    return int(meta["req_id"]), str(meta["cb_name"]), arr
+    return arr
+
+
+def _unpack_call_large(body: bytes) -> tuple[int, str, np.ndarray]:
+    """Reconstruct a CALL_LARGE body and materialize the ndarray.
+
+    Args:
+        body: Pickled metadata produced by :func:`_pack_call_large`.
+
+    Returns:
+        Triple ``(req_id, cb_name, ndarray)``.
+    """
+    req_id, cb_name, meta = _parse_call_large_meta(body)
+    return req_id, cb_name, _materialize_call_large(meta)
 
 
 def _try_unlink_shm(name: str) -> None:
@@ -564,6 +596,12 @@ class TinyServer:
     def _handle_frame(self, conn: socket.socket, kind: int, body: bytes) -> None:
         """Dispatch a decoded frame to the right handler path.
 
+        ``CALL_LARGE`` materialization (shm open, memcpy, unlink) is
+        pushed onto the worker pool so a large payload does not stall
+        the per-connection reader while it copies hundreds of MiB out
+        of shared memory -- the next frame on the same connection can
+        begin decoding immediately.
+
         Args:
             conn: Peer socket the frame arrived on.
             kind: Message kind from the frame header.
@@ -574,13 +612,100 @@ class TinyServer:
             pending = _PendingCall(conn, int(req_id), str(cb_name), arg)
             self._pool.submit(self._execute_call, pending)
         elif kind == _MSG_CALL_LARGE:
-            req_id, cb_name, arr = _unpack_call_large(body)
-            pending = _PendingCall(conn, req_id, cb_name, arr)
-            self._pool.submit(self._execute_call, pending)
+            self._pool.submit(self._execute_large_call, conn, body)
         elif kind == _MSG_BYE:
             return
         else:
             _logger.warning(f"{self.name}: unknown frame kind {kind}")
+
+    def _execute_large_call(self, conn: socket.socket, body: bytes) -> None:
+        """Unpack a ``CALL_LARGE`` body and run the callback.
+
+        Runs on the worker pool rather than the reader thread so shm
+        extraction does not block subsequent frames on the same
+        connection. Failure modes:
+
+        * Metadata pickle is corrupt: nothing to address a reply to, so
+          log and drop. The caller's future will eventually resolve
+          when the client notices the dead socket.
+        * Metadata parses but the shm block is missing or malformed:
+          use the parsed ``req_id`` / ``cb_name`` to send an
+          ``ok=False`` REPLY so the caller's future resolves instead
+          of hanging forever.
+
+        Args:
+            conn: Peer socket the frame arrived on.
+            body: Pickled metadata produced by :func:`_pack_call_large`.
+        """
+        try:
+            req_id, cb_name, meta = _parse_call_large_meta(body)
+        except Exception as exc:
+            _logger.error(f"{self.name}: failed to parse CALL_LARGE metadata: {exc}")
+            return
+        try:
+            arr = _materialize_call_large(meta)
+        except Exception as exc:
+            _logger.error(
+                f"{self.name}: failed to materialize CALL_LARGE "
+                f"(req_id={req_id}, cb={cb_name!r}): {exc}"
+            )
+            self._reply_failure(
+                conn,
+                req_id,
+                cb_name,
+                RuntimeError(
+                    f"tinyros server {self.name!r}: CALL_LARGE payload for "
+                    f"{cb_name!r} could not be read from shared memory: {exc}"
+                ),
+            )
+            return
+        self._execute_call(_PendingCall(conn, req_id, cb_name, arr))
+
+    def _reply_failure(
+        self,
+        conn: socket.socket,
+        req_id: int,
+        cb_name: str,
+        exc: BaseException,
+    ) -> None:
+        """Send a synthesized ``ok=False`` REPLY without running a callback.
+
+        Used when dispatch itself fails before the callback has a
+        chance to run (e.g., CALL_LARGE shm materialization errors).
+
+        Args:
+            conn: Peer socket the original frame arrived on.
+            req_id: Request id to address the reply to.
+            cb_name: Callback name -- only used for the log line.
+            exc: Exception to ship back as the failure cause.
+        """
+        try:
+            body = _pack_oob((req_id, False, exc))
+        except Exception as pickle_exc:
+            _logger.warning(
+                f"{self.name}: failure reply for {cb_name!r} is not "
+                f"picklable ({pickle_exc}); substituting RuntimeError"
+            )
+            body = _pack_oob(
+                (
+                    req_id,
+                    False,
+                    RuntimeError(
+                        f"tinyros server {self.name!r}: dispatch error "
+                        f"for {cb_name!r} is not serializable "
+                        f"({type(exc).__name__}: {pickle_exc})"
+                    ),
+                )
+            )
+        frame = _frame(_MSG_REPLY, body)
+        lock = self._conn_send_locks.get(conn)
+        if lock is None:
+            return
+        with lock:
+            try:
+                conn.sendall(frame)
+            except OSError:
+                return
 
     def _execute_call(self, call: _PendingCall) -> None:
         """Run the callback and send a REPLY frame.
