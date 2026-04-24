@@ -364,9 +364,14 @@ class TinyServer:
         )
         self._server_sock: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
-        self._reader_threads: list[threading.Thread] = []
-        self._conns: list[socket.socket] = []
-        self._conn_send_locks: dict[int, threading.Lock] = {}
+        # Per-connection bookkeeping is keyed by the connection socket
+        # itself so drop_conn can prune each map and bounded memory
+        # holds across many connect/disconnect cycles. id(conn) would
+        # work while the object is live but is fragile if a future
+        # refactor lets any map outlive the socket.
+        self._reader_threads: dict[socket.socket, threading.Thread] = {}
+        self._conns: set[socket.socket] = set()
+        self._conn_send_locks: dict[socket.socket, threading.Lock] = {}
         self._conns_lock = threading.Lock()
         self._running = threading.Event()
         self._started = False
@@ -429,8 +434,15 @@ class TinyServer:
                 pass
             self._server_sock = None
 
+        # Join the accept loop before snapshotting so a race-accepted
+        # connection can't be registered after the snapshot and leak
+        # its reader thread out of close().
+        if self._accept_thread is not None:
+            self._accept_thread.join(timeout=timeout)
+
         with self._conns_lock:
             conns = list(self._conns)
+            readers = list(self._reader_threads.values())
         for conn in conns:
             try:
                 conn.shutdown(socket.SHUT_RDWR)
@@ -441,9 +453,7 @@ class TinyServer:
             except OSError:
                 pass
 
-        if self._accept_thread is not None:
-            self._accept_thread.join(timeout=timeout)
-        for t in self._reader_threads:
+        for t in readers:
             t.join(timeout=timeout)
 
         self._pool.shutdown(wait=True, cancel_futures=True)
@@ -462,19 +472,40 @@ class TinyServer:
                 continue
             except OSError:
                 return
+            # close() may have cleared _running while accept() was
+            # blocking; drop the new conn instead of leaking a reader.
+            if not self._running.is_set():
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                return
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             conn.settimeout(_READ_POLL_S)
-            with self._conns_lock:
-                self._conns.append(conn)
-                self._conn_send_locks[id(conn)] = threading.Lock()
             reader = threading.Thread(
                 target=self._reader_loop,
                 args=(conn,),
                 daemon=True,
                 name=f"tinyros-reader-{self.name}-{conn.fileno()}",
             )
-            reader.start()
-            self._reader_threads.append(reader)
+            with self._conns_lock:
+                self._conns.add(conn)
+                self._conn_send_locks[conn] = threading.Lock()
+                self._reader_threads[conn] = reader
+                try:
+                    reader.start()
+                except RuntimeError:
+                    # Starting the thread failed (e.g., interpreter
+                    # shutdown). Unregister so close()'s reader snapshot
+                    # doesn't try to join a thread that never started.
+                    self._conns.discard(conn)
+                    self._conn_send_locks.pop(conn, None)
+                    self._reader_threads.pop(conn, None)
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                    return
 
     def _reader_loop(self, conn: socket.socket) -> None:
         """Read framed messages from ``conn`` and dispatch callbacks.
@@ -567,7 +598,7 @@ class TinyServer:
                 )
             )
         frame = _frame(_MSG_REPLY, body)
-        lock = self._conn_send_locks.get(id(call.conn))
+        lock = self._conn_send_locks.get(call.conn)
         if lock is None:
             return
         with lock:
@@ -591,11 +622,9 @@ class TinyServer:
         except OSError:
             pass
         with self._conns_lock:
-            try:
-                self._conns.remove(conn)
-            except ValueError:
-                pass
-            self._conn_send_locks.pop(id(conn), None)
+            self._conns.discard(conn)
+            self._conn_send_locks.pop(conn, None)
+            self._reader_threads.pop(conn, None)
 
 
 # --- Client ---------------------------------------------------------------
