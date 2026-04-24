@@ -149,6 +149,15 @@ class TinyNode:
     2. Starts a server bound to every callback method named in the config.
     3. Opens one client per distinct ``(host, port)`` it publishes to.
     4. Dispatches :meth:`publish` to every subscription for the topic.
+
+    Long-running nodes should call :meth:`shutdown` explicitly or use
+    the node as a context manager::
+
+        with MyNode(name="pub", network_config=cfg) as node:
+            node.publish("topic", payload)
+
+    An ``atexit`` hook is registered as a best-effort safety net but
+    is not a substitute for deterministic shutdown.
     """
 
     def __init__(
@@ -219,11 +228,11 @@ class TinyNode:
             if hasattr(self, callback_name):
                 self.server.bind(callback_name, getattr(self, callback_name))
                 _logger.info(
-                    f"{self.name}: bound '{callback_name}' for " f"topic '{topic_name}'"
+                    f"{self.name}: bound '{callback_name}' " f"for topic '{topic_name}'"
                 )
             else:
                 _logger.error(
-                    f"{self.name}: callback method '{callback_name}' " "not found"
+                    f"{self.name}: callback method " f"'{callback_name}' not found"
                 )
 
     def publish(self, topic: str, message: Any) -> list[concurrent.futures.Future]:
@@ -235,7 +244,10 @@ class TinyNode:
 
         Returns:
             One future per subscriber, resolving with the callback's
-            return value (typically ``None``).
+            return value (typically ``None``). An empty list is
+            returned when ``topic`` has no subscribers -- no error
+            is raised so publishers can run before their consumers
+            connect.
         """
         if topic not in self.topic_calls:
             _logger.warning(f"{self.name}: no subscribers for '{topic}'")
@@ -245,7 +257,7 @@ class TinyNode:
             try:
                 client = self.clients[client_key]
                 futures.append(client.call(cb_name, message))
-            except Exception as exc:  # noqa: BLE001
+            except (ConnectionError, OSError, RuntimeError) as exc:
                 _logger.error(f"{self.name}: failed to send message - {exc}")
         return futures
 
@@ -254,10 +266,27 @@ class TinyNode:
         _logger.info(f"{self.name}: shutting down")
         try:
             self.server.close()
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, RuntimeError) as exc:
             _logger.warning(f"{self.name}: error closing server: {exc}")
         for client in self.clients.values():
             try:
                 client.close()
-            except Exception as exc:  # noqa: BLE001
+            except (OSError, RuntimeError) as exc:
                 _logger.warning(f"{self.name}: error closing client: {exc}")
+
+    def __enter__(self) -> TinyNode:
+        """Return self so ``with TinyNode(...) as node:`` works.
+
+        Returns:
+            The node itself, already started by :meth:`__init__`.
+        """
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Tear the node down on context exit."""
+        self.shutdown()
