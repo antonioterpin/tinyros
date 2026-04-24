@@ -53,6 +53,23 @@ The transport uses TCP stream sockets (`AF_INET` / `SOCK_STREAM`). Each
 node binds its own port from the network config; peers reach it via the
 same `(host, port)` pair.
 
+## Security posture
+
+The wire deserializes with `pickle.loads`, which is equivalent to
+arbitrary code execution for anyone who can connect to the port. There
+is no authentication between peers. Consequences:
+
+- **`TinyNode` defaults `bind_host` to `127.0.0.1`.** A node that
+  forgets to pass `bind_host` is only reachable from the same host.
+- Passing a non-loopback `bind_host` (`0.0.0.0`, a specific NIC, or a
+  hostname) is allowed but logs a warning: the resulting node will
+  execute arbitrary Python for any peer on the network that can
+  reach the port.
+- TinyROS is designed for single-host multi-process deployments
+  behind a trust boundary (one user, one machine, one container).
+  Running it across an untrusted network requires an external layer
+  — mTLS, a VPN, IP allowlisting — that TinyROS does not provide.
+
 ## Threading model
 
 Each server runs:

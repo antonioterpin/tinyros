@@ -191,6 +191,69 @@ def test_publish_unknown_topic_is_noop(three_free_ports: list[int]) -> None:
             wait_port_free(p)
 
 
+@pytest.mark.parametrize(
+    "host,expected",
+    [
+        ("127.0.0.1", True),
+        ("127.0.0.2", True),  # whole 127.0.0.0/8 range is loopback
+        ("127.255.255.255", True),
+        ("localhost", True),
+        ("0.0.0.0", False),
+        ("192.168.1.1", False),
+        ("8.8.8.8", False),
+        ("peer.internal", False),
+        # Current transport is AF_INET only; IPv6 literals can't be
+        # bound, so _is_loopback_host refuses to call them loopback.
+        ("::1", False),
+        ("::", False),
+    ],
+)
+def test_is_loopback_host(host: str, expected: bool) -> None:
+    """Loopback detection covers the full 127.0.0.0/8 range and ``localhost``.
+
+    IPv4 loopback is the entire ``127.0.0.0/8`` block per RFC 6890, not
+    just ``127.0.0.1``. The transport binds ``AF_INET`` only, so IPv6
+    literals -- including ``::1`` -- are explicitly *not* treated as
+    loopback: a user who types them expects a usable bind, and silently
+    returning True would hide that the transport can't actually honor
+    it.
+    """
+    from tinyros.node import _is_loopback_host  # noqa: PLC0415
+
+    actual = _is_loopback_host(host)
+    assert (
+        actual is expected
+    ), f"_is_loopback_host({host!r}) should be {expected}; got {actual}"
+
+
+class _DefaultBindNode(TinyNode):
+    """TinyNode that relies on the default ``bind_host`` for coverage tests."""
+
+    def on_topic(self, msg: object) -> str:
+        """Satisfy the subscription check; return value is not asserted on."""
+        return "ok"
+
+
+def test_default_bind_host_is_loopback(three_free_ports: list[int]) -> None:
+    """A TinyNode constructed without ``bind_host`` binds loopback only.
+
+    Pickle deserialization is arbitrary code execution for any peer
+    that can open the port, so a safe default is essential. This
+    guards against a forgetful constructor call exposing the node on
+    every interface.
+    """
+    cfg = _make_config(_ports(three_free_ports))
+    sub_a_port = three_free_ports[1]
+    node = _DefaultBindNode(name="sub_a", network_config=cfg)
+    try:
+        assert (
+            node.server.host == "127.0.0.1"
+        ), f"default bind_host must be loopback; got {node.server.host!r}"
+    finally:
+        node.shutdown()
+        wait_port_free(sub_a_port)
+
+
 def test_init_rejects_unknown_node_name(
     three_free_ports: list[int],
 ) -> None:
