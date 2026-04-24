@@ -18,13 +18,21 @@ Kinds:
 
 | Kind | Meaning |
 |---|---|
-| `CALL` | RPC call: body is pickled `(cb_name, args_tuple, req_id)` |
-| `CALL_LARGE` | RPC call whose payload went through shared memory |
+| `CALL` | RPC call: body is pickled `(req_id, cb_name, arg)` |
+| `CALL_LARGE` | RPC call whose single-ndarray payload travels through shared memory; body is a pickled metadata dict (see below) |
 | `REPLY` | Response to an RPC: body is pickled `(req_id, ok, payload_or_exc)` |
 | `BYE` | Client announces graceful disconnect |
 
-The body uses **pickle protocol 5 with out-of-band buffers** so numpy
-payloads do not get copied into the main pickle stream.
+`arg` is a single positional value — the transport does not carry
+`*args` / `**kwargs`. Callbacks bound via `TinyServer.bind` are invoked
+as `fn(arg)`.
+
+The `CALL` body uses **pickle protocol 5 with out-of-band buffers** so
+numpy payloads embedded inside `arg` do not get copied into the main
+pickle stream. The `CALL_LARGE` body is a plain pickle of the metadata
+dict `{"req_id", "cb_name", "shm_name", "dtype", "shape", "nbytes"}`;
+the ndarray itself travels through the shared-memory block named by
+`shm_name`.
 
 ## Shared-memory fast path
 
