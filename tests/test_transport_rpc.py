@@ -617,6 +617,54 @@ def test_reconnect_drops_pre_failure_queued_frames(free_port: int) -> None:
         wait_port_free(free_port)
 
 
+def test_call_large_shm_missing_returns_failure_reply(free_port: int) -> None:
+    """A CALL_LARGE whose shm block has vanished must not hang the caller.
+
+    After shifting ``_unpack_call_large`` onto the worker pool, a
+    materialization error (missing/corrupt shm) used to surface only
+    as a log line; the client's future stayed pending forever. The
+    worker must now send an ``ok=False`` REPLY once metadata parses,
+    so the caller sees a bounded-time ``RuntimeError``.
+    """
+    from multiprocessing import shared_memory as _shm
+
+    from tinyros.transport import (  # type: ignore[attr-defined]
+        _MSG_CALL_LARGE,
+        _frame,
+        _pack_call_large,
+    )
+
+    server = TinyServer(name="t-shm-missing", host="127.0.0.1", port=free_port)
+    server.bind("shape_of", lambda arr: arr.shape)
+    server.start(block=False)
+    client = TinyClient(host="127.0.0.1", port=free_port, name="t-shm-missing-cli")
+    try:
+        # Allocate + immediately unlink a shm block to get a name that
+        # looks valid but is not resolvable. Then craft a CALL_LARGE
+        # frame referencing it and push it through the send queue.
+        scratch = _shm.SharedMemory(create=True, size=16)
+        dead_name = scratch.name
+        scratch.close()
+        scratch.unlink()
+
+        arr = np.ones((4, 4), dtype=np.float32)
+        body = _pack_call_large(
+            req_id=9999, cb_name="shape_of", arr=arr, shm_name=dead_name
+        )
+        frame = _frame(_MSG_CALL_LARGE, body)
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        with client._pending_lock:  # noqa: SLF001
+            client._pending[9999] = fut  # noqa: SLF001
+        client._send_queue.put((frame, None))  # noqa: SLF001
+
+        with pytest.raises(RuntimeError, match="shared memory"):
+            fut.result(timeout=2.0)
+    finally:
+        client.close(timeout=1.0)
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
 def test_pending_futures_fail_on_send_failure(free_port: int) -> None:
     """When ``_send_loop`` hits ``OSError``, every pending future must
     resolve with ``ConnectionError`` rather than hang.
