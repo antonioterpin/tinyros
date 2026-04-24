@@ -7,6 +7,7 @@ and that shutdown releases the port.
 
 from __future__ import annotations
 
+import concurrent.futures
 import socket
 import struct
 import threading
@@ -260,6 +261,92 @@ def test_oversized_frame_header_drops_connection(free_port: int) -> None:
         )
     finally:
         raw.close()
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
+def test_pending_futures_fail_on_send_failure(free_port: int) -> None:
+    """When ``_send_loop`` hits ``OSError``, every pending future must
+    resolve with ``ConnectionError`` rather than hang.
+
+    Prior to the fix, the send loop cleared ``_running`` and returned
+    without failing per-request futures; ``_recv_loop``'s fail-pending
+    branch was gated on ``_running``, so pending futures stayed
+    unresolved. Exercises the send/recv race over ``iterations`` runs
+    so flakes in one direction are caught — whoever notices the dead
+    socket first, every future must fail cleanly.
+    """
+    iterations = 25
+    in_flight = 5
+    for i in range(iterations):
+        server = TinyServer(name=f"t-sf-srv-{i}", host="127.0.0.1", port=free_port)
+        server.bind("noop", lambda _x: None)
+        server.start(block=False)
+        client = TinyClient(host="127.0.0.1", port=free_port, name=f"t-sf-cli-{i}")
+        try:
+            # Break the write side of the client's socket so the next
+            # sendall raises BrokenPipeError immediately. This biases
+            # the send loop to lose the race with recv, which is the
+            # path the original bug lived on.
+            client._sock.shutdown(socket.SHUT_WR)  # noqa: SLF001
+            futures = [client.call("noop", j) for j in range(in_flight)]
+            for fut in futures:
+                with pytest.raises(ConnectionError):
+                    fut.result(timeout=2.0)
+        finally:
+            client.close(timeout=1.0)
+            server.close(timeout=1.0)
+            wait_port_free(free_port)
+
+
+def test_call_racing_teardown_does_not_hang(free_port: int) -> None:
+    """A ``call()`` racing with ``_fail_all_pending`` must not leak a future.
+
+    The early ``_running`` check in ``call()`` is not enough on its own:
+    without re-checking under ``_pending_lock``, a call can pass the
+    gate, be preempted, and insert into ``_pending`` after teardown has
+    already drained the map — leaving that future orphaned. ``call()``
+    must re-verify ``_running`` under the same lock it uses to insert,
+    and ``_fail_all_pending`` must clear ``_running`` under that lock.
+
+    Drive the interleaving deterministically: hold ``_pending_lock``
+    from the test thread, kick a ``call()`` on a worker (which will
+    pass the fast-path check and then block on the lock), then clear
+    ``_running`` and release. The only gate that can still save the
+    future is the re-check this fix adds inside the critical section.
+    """
+    server = TinyServer(name="t-race-srv", host="127.0.0.1", port=free_port)
+    server.bind("noop", lambda _x: None)
+    server.start(block=False)
+    client = TinyClient(host="127.0.0.1", port=free_port, name="t-race-cli")
+    try:
+        result: dict[str, concurrent.futures.Future] = {}
+        worker_ready = threading.Event()
+
+        def _caller() -> None:
+            worker_ready.set()
+            result["fut"] = client.call("noop", 1)
+
+        with client._pending_lock:  # noqa: SLF001
+            t = threading.Thread(target=_caller, daemon=True)
+            t.start()
+            # Give the worker time to pass the fast-path `is_set()`
+            # check and land on the contended `_pending_lock`.
+            assert worker_ready.wait(timeout=1.0)
+            time.sleep(0.05)
+            client._running.clear()  # noqa: SLF001
+        t.join(timeout=1.0)
+        assert not t.is_alive(), "worker call() must not hang on teardown"
+        fut = result["fut"]
+        with pytest.raises(ConnectionError):
+            fut.result(timeout=1.0)
+        with client._pending_lock:  # noqa: SLF001
+            assert client._pending == {}, (  # noqa: SLF001
+                "call() must not leave an entry in _pending once "
+                "_running has been cleared under the lock"
+            )
+    finally:
+        client.close(timeout=1.0)
         server.close(timeout=1.0)
         wait_port_free(free_port)
 

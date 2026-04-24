@@ -752,6 +752,13 @@ class TinyClient:
             req_id = self._next_req_id
             self._next_req_id += 1
         with self._pending_lock:
+            if not self._running.is_set():
+                fut.set_exception(
+                    ConnectionError(
+                        f"tinyros client {self.name!r} is no longer running"
+                    )
+                )
+                return fut
             self._pending[req_id] = fut
         try:
             frame, shm_name = self._encode_call(req_id, method, arg)
@@ -815,7 +822,12 @@ class TinyClient:
                 self._sock.sendall(frame)
             except OSError as exc:
                 _logger.warning(f"{self.name}: send failed ({exc}); tearing down")
-                self._fail_pending(shm_name)
+                self._fail_all_pending(
+                    ConnectionError(
+                        f"tinyros client {self.name!r}: send failed ({exc})"
+                    )
+                )
+                self._shutdown_io()
                 return
             else:
                 if shm_name is not None:
@@ -876,40 +888,14 @@ class TinyClient:
                     else RuntimeError(str(result))
                 )
 
-    def _fail_pending(self, shm_name: str | None) -> None:
-        """Fail one send item and mark the client unusable.
-
-        Args:
-            shm_name: Shared-memory block name for the failing send
-                (if any).
-        """
-        self._running.clear()
-        names: list[str] = []
-        if shm_name is not None:
-            names.append(shm_name)
-        while True:
-            try:
-                item = self._send_queue.get_nowait()
-            except queue.Empty:
-                break
-            if item is _SENTINEL:
-                continue
-            if isinstance(item, tuple) and item[1] is not None:
-                names.append(item[1])
-        for n in names:
-            _try_unlink_shm(n)
-        with self._pending_shm_lock:
-            for n in names:
-                self._pending_shm.discard(n)
-
     def _fail_all_pending(self, exc: BaseException) -> None:
         """Resolve every outstanding future with an exception.
 
         Args:
             exc: Exception to set on each pending future.
         """
-        self._running.clear()
         with self._pending_lock:
+            self._running.clear()
             pending = dict(self._pending)
             self._pending.clear()
         for fut in pending.values():
