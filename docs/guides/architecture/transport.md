@@ -1,9 +1,7 @@
 # Transport
 
 The transport is the single low-level thing TinyROS owns: a small
-RPC-style pub/sub wire between nodes on one machine. It replaces the
-former `portal`-based backend and uses the same techniques as
-[`goggles`](https://github.com/antonioterpin/goggles)' `LocalTransport`.
+RPC-style pub/sub wire between nodes on one machine.
 
 ## Wire protocol
 
@@ -43,27 +41,28 @@ send queue is dropped during shutdown.
 
 ## Endpoint abstraction
 
-- **Linux / macOS**: `AF_UNIX` stream socket. Addresses are
-  `(host, port)`; the concrete filesystem path is derived from these and
-  protected at `0o600`.
-- **Windows**: `AF_UNIX` is unreliable, so the transport binds a TCP
-  loopback socket on `127.0.0.1` at the configured port.
-
-Per-node addressing is inherited from the network config: each node binds
-its own port, identical to the pre-portal behavior.
+The transport uses TCP stream sockets (`AF_INET` / `SOCK_STREAM`). Each
+node binds its own port from the network config; peers reach it via the
+same `(host, port)` pair.
 
 ## Threading model
 
 Each server runs:
 
-- An **accept** thread (polls with a 100 ms timeout so shutdown can break out).
-- One **reader** thread per connected client, which dispatches CALL / BYE frames.
-- A **drain** thread that serializes callback invocations.
+- An **accept** thread (polls with a 100 ms timeout so shutdown can
+  break out).
+- One **reader** thread per connected client, which dispatches
+  CALL / CALL_LARGE / BYE frames. Peer sockets carry a 1 s read timeout
+  so a silent peer cannot block shutdown.
+- A bounded **thread pool** for callback execution so slow handlers do
+  not block subsequent frames on the same connection.
 
 Each client runs:
 
 - A **send** thread that drains a queue of outbound frames.
-- A **recv** thread that demultiplexes REPLY frames onto per-request Futures.
+- A **recv** thread that demultiplexes REPLY frames onto per-request
+  futures. The recv socket uses the same 1 s read timeout pattern for
+  responsive shutdown.
 
 ## Shutdown semantics
 

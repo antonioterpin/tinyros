@@ -1,7 +1,6 @@
 """Benchmark tests for portal message passing speed with CPU/GPU payloads.
 
-Requires the optional ``[portal]`` extra (TinyROS no longer depends on
-``portal`` at runtime; see ``docs/guides/architecture/transport.md``)::
+Requires the optional ``[portal]`` extra::
 
     uv sync --extra portal
     # or

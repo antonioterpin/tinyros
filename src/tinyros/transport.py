@@ -1,7 +1,6 @@
 """TinyROS transport: minimal RPC wire between nodes.
 
-This module owns the network plumbing that replaces the former
-``portal``-based backend. It exposes two public classes:
+Two public classes:
 
 - :class:`TinyServer`: binds a TCP port, dispatches inbound RPC calls to
   named callbacks registered via :meth:`TinyServer.bind`.

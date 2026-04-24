@@ -11,7 +11,7 @@ A minimal implementation of an operating system for robots, to ease the integrat
 
 ## 🏛️ Design Philosophy
 
-🪶 **Single-file solution**: `TinyROS` relies on [portal](https://github.com/danijar/portal) for reliable inter-process communication and works under the assumption that in most robotic systems, communication is primarily peer-to-peer or involves only a few subscribers per publisher (in [ROS](https://docs.ros.org/) terminology). This targeted approach allows us to strip down complexity significantly. We deliberately avoid the entire ROS ecosystem baggage while providing the familiar publisher-subscriber pattern for the 90% of use cases that don't need the full complexity of ROS2.
+🪶 **Single-file solution**: `TinyROS` ships its own minimal transport — an RPC-style pub/sub wire on top of `AF_UNIX` (TCP loopback on Windows) with a `multiprocessing.shared_memory` side-channel for large ndarray payloads. It works under the assumption that in most robotic systems, communication is primarily peer-to-peer or involves only a few subscribers per publisher (in [ROS](https://docs.ros.org/) terminology). This targeted approach lets us strip complexity down significantly: we deliberately avoid the entire ROS ecosystem baggage while providing the familiar publisher-subscriber pattern for the 90% of use cases that don't need the full complexity of ROS2.
 
 ✨ **Cross-platform and easy to install**: `TinyROS` comes without installation headaches and is extremely lean while being cross-platform. You can develop on macOS, Windows, Linux, etc. It maintains the same (or better) efficiency as ROS2 implementations while being completely written in Python. We increase flexibility, ease of use, clarity, and reduce package size without compromising performance.
 
