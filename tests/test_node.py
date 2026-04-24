@@ -198,3 +198,65 @@ def test_init_rejects_unknown_node_name(
     cfg = _make_config(_ports(three_free_ports))
     with pytest.raises(ValueError, match="ghost"):
         TinyNode("ghost", cfg, bind_host="127.0.0.1")
+
+
+class _Boomer(TinyNode):
+    """Subscriber whose callback always raises."""
+
+    def on_topic(self, msg: object) -> None:
+        """Deliberately raise to test exception propagation.
+
+        Args:
+            msg: Unused.
+        """
+        raise ValueError(f"deliberate: {msg!r}")
+
+
+def test_callback_exception_surfaces_on_publisher_future(
+    three_free_ports: list[int],
+) -> None:
+    """A raise inside a subscriber's callback fails the publisher's future."""
+    cfg = _make_config(_ports(three_free_ports))
+    sub_a = _Boomer("sub_a", cfg, bind_host="127.0.0.1")
+    sub_b = _Recorder("sub_b", cfg)
+    pub = TinyNode("pub", cfg, bind_host="127.0.0.1")
+    try:
+        time.sleep(0.2)
+        futures = pub.publish("topic", "ping")
+        assert len(futures) == 2
+        results: list[object] = []
+        for fut in futures:
+            try:
+                results.append(fut.result(timeout=2.0))
+            except ValueError as exc:
+                results.append(exc)
+        kinds = [type(r).__name__ if isinstance(r, Exception) else r for r in results]
+        assert "ValueError" in kinds, (
+            f"one future must surface the subscriber's ValueError; " f"got {kinds}"
+        )
+        assert "ack" in kinds, (
+            f"the other subscriber must still ack normally; " f"got {kinds}"
+        )
+        assert sub_b.received == ["ping"]
+    finally:
+        pub.shutdown()
+        sub_a.shutdown()
+        sub_b.shutdown()
+        for p in three_free_ports:
+            wait_port_free(p)
+
+
+def test_context_manager_shuts_down_on_exit(
+    three_free_ports: list[int],
+) -> None:
+    """``with TinyNode(...) as n:`` releases the port on block exit.
+
+    We pick ``sub_a`` because it only binds a listener and has no
+    outbound publishing in the test topology -- the context-manager
+    contract is independent of whether the node publishes.
+    """
+    cfg = _make_config(_ports(three_free_ports))
+    sub_a_port = three_free_ports[1]
+    with TinyNode("sub_a", cfg, bind_host="127.0.0.1"):
+        pass
+    wait_port_free(sub_a_port)
