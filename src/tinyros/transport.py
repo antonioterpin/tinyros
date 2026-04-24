@@ -39,10 +39,11 @@ from collections.abc import Callable
 from multiprocessing import shared_memory
 from typing import Any
 
-import goggles as gg
 import numpy as np
 
-_logger = gg.get_logger("tinyros.transport", scope="tinyros.transport")
+from ._logging import get_logger
+
+_logger = get_logger("tinyros.transport", scope="tinyros.transport")
 
 # --- Wire kinds -----------------------------------------------------------
 

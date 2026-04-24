@@ -20,13 +20,19 @@ classifiers = [
 requires-python = ">=3.10"
 
 # Core dependencies
+# Intentionally minimal so `pip install tinyros` resolves cleanly from
+# PyPI. Structured logging via `goggles` is opt-in through the
+# `[logging]` extra below -- tinyros falls back to the stdlib `logging`
+# module when goggles is not installed.
 dependencies = [
     "PyYAML>=6.0.0",
     "numpy>=1.24.0",
-    "robo-goggles[wandb,jax]",
 ]
 
 [tool.uv.sources]
+# uv-only hint: dev environments pick up the dev branch of goggles.
+# Stripped from the published wheel's metadata -- end users installing
+# from PyPI never see this line.
 robo-goggles = { git = "https://github.com/antonioterpin/goggles.git", branch = "dev" }
 
 # Optional dependencies
@@ -38,11 +44,14 @@ dev = [
     "hypothesis>=6.0.0",
     "pre_commit==4.0.1",
     "basedpyright>=1.37.1",
+    "robo-goggles[wandb,jax]",
 ]
-# Benchmark parity target: `portal` is no longer a runtime backend
-# (see docs/guides/architecture/transport.md) but the comparison
-# benchmarks under tests/benchmark/portal/ and
-# tests/benchmark/test_publish_fn_speed.py still import it.
+# Opt-in structured logging via goggles. Core tinyros works without it.
+logging = [
+    "robo-goggles",
+]
+# Optional: only needed to run the comparison benchmarks under
+# tests/benchmark/portal/ and tests/benchmark/test_publish_fn_speed.py.
 # Install with: `uv sync --extra portal` or `pip install -e '.[portal]'`.
 portal = [
     "portal>=0.1.0",

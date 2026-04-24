@@ -4,7 +4,8 @@ Demonstrates a multi-process robotics application using TinyROS with:
 
 - Scalar publisher at 0.5 Hz
 - Image publisher at 1 Hz
-- Control processor that aggregates data and publishes actuation at 0.5 Hz
+- Control processor that aggregates data and publishes actuation at
+  0.5 Hz
 - Actuation feedback with noise
 
 Each actor is implemented as a class inheriting from :class:`TinyNode`.
@@ -12,17 +13,21 @@ Each actor is implemented as a class inheriting from :class:`TinyNode`.
 
 from __future__ import annotations
 
+import logging
 import multiprocessing as mp
 import os
 import time
 
-import goggles as gg
 import numpy as np
 import yaml
 
 from tinyros import TinyNetworkConfig, TinyNode
 
-_logger = gg.get_logger("tinyros.example", scope="tinyros.example")
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(name)s %(levelname)s %(message)s",
+)
+_logger = logging.getLogger("tinyros.example")
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "network_config.yaml")
 with open(_CONFIG_PATH) as _f:
@@ -47,7 +52,9 @@ class ScalarPublisher(TinyNode):
             while True:
                 scalar_value = np.sin(counter * 0.1) * 100 + np.random.normal(0, 5)
                 self.publish("scalar_data", float(scalar_value))
-                _logger.info(f"ScalarPublisher: published scalar = {scalar_value:.2f}")
+                _logger.info(
+                    f"ScalarPublisher: published scalar = " f"{scalar_value:.2f}"
+                )
                 counter += 1
                 time.sleep(sleep_time)
         except KeyboardInterrupt:
@@ -101,7 +108,9 @@ class ControlProcessor(TinyNode):
             data: Received scalar value.
         """
         self.latest_scalar = data
-        _logger.info(f"ControlProcessor: received scalar = {self.latest_scalar:.2f}")
+        _logger.info(
+            f"ControlProcessor: received scalar = " f"{self.latest_scalar:.2f}"
+        )
 
     def on_image_data(self, data: np.ndarray) -> None:
         """Callback for image data.

@@ -18,13 +18,13 @@ from __future__ import annotations
 import atexit
 import concurrent.futures
 from dataclasses import dataclass
+from types import TracebackType
 from typing import Any
 
-import goggles as gg
-
+from ._logging import get_logger
 from .transport import TinyClient, TinyServer
 
-_logger = gg.get_logger("tinyros.node", scope="tinyros.node")
+_logger = get_logger("tinyros.node", scope="tinyros.node")
 
 
 @dataclass(frozen=True)

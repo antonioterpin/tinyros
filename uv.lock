@@ -3087,13 +3087,12 @@ wheels = [
 
 [[package]]
 name = "tinyros"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pyyaml" },
-    { name = "robo-goggles", extra = ["jax", "wandb"] },
 ]
 
 [package.optional-dependencies]
@@ -3108,6 +3107,10 @@ dev = [
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "robo-goggles", extra = ["jax", "wandb"] },
+]
+logging = [
+    { name = "robo-goggles" },
 ]
 portal = [
     { name = "portal" },
@@ -3131,9 +3134,10 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
-    { name = "robo-goggles", extras = ["wandb", "jax"], git = "https://github.com/antonioterpin/goggles.git?branch=dev" },
+    { name = "robo-goggles", marker = "extra == 'logging'", git = "https://github.com/antonioterpin/goggles.git?branch=dev" },
+    { name = "robo-goggles", extras = ["wandb", "jax"], marker = "extra == 'dev'", git = "https://github.com/antonioterpin/goggles.git?branch=dev" },
 ]
-provides-extras = ["dev", "portal", "benchmark"]
+provides-extras = ["dev", "logging", "portal", "benchmark"]
 
 [package.metadata.requires-dev]
 dev = [
