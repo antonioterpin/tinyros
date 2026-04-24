@@ -96,6 +96,34 @@ def test_remote_exception_propagates(
         fut.result(timeout=2.0)
 
 
+def test_unpicklable_exception_resolves_future(
+    server_client_pair: tuple[TinyServer, TinyClient, int],
+) -> None:
+    """A callback raising an exception whose args are not picklable must
+    not hang the client.
+
+    Before the fix, ``_pack_oob((req_id, False, exc))`` raised inside the
+    worker thread; no REPLY was sent; the future stayed unresolved
+    forever. After: the server logs the pickle failure, substitutes a
+    ``RuntimeError`` describing the original result type, and the caller
+    gets a bounded-time resolution.
+    """
+    server, client, _ = server_client_pair
+
+    def boom(_: object) -> None:
+        # A threading.Lock in the exception args is not picklable;
+        # pickle.dumps raises TypeError while serializing the tuple.
+        raise RuntimeError("synthetic", threading.Lock())
+
+    server.bind("boom", boom)
+    fut = client.call("boom", None)
+    with pytest.raises(RuntimeError) as excinfo:
+        fut.result(timeout=2.0)
+    assert "not serializable" in str(excinfo.value), (
+        f"fallback message should mention the pickle failure; " f"got {excinfo.value!r}"
+    )
+
+
 def test_unknown_method_raises_on_client(
     server_client_pair: tuple[TinyServer, TinyClient, int],
 ) -> None:
