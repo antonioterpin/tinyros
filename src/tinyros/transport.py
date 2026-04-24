@@ -77,6 +77,7 @@ _RECONNECT_TIMEOUT_S = 2.0
 # ``_running`` and looping. Short enough that close() is responsive; long
 # enough that we don't burn CPU spinning on a saturated pool.
 _INFLIGHT_ACQUIRE_POLL_S = 0.2
+_LISTEN_BACKLOG = 64
 
 _SENTINEL = object()
 
@@ -485,7 +486,7 @@ class TinyServer:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((self.host, self.port))
-        sock.listen(64)
+        sock.listen(_LISTEN_BACKLOG)
         sock.settimeout(_ACCEPT_POLL_S)
         self._server_sock = sock
 
@@ -502,8 +503,17 @@ class TinyServer:
     def close(self, timeout: float | None = 2.0) -> None:
         """Stop the server and release resources.
 
+        ``timeout`` gates the joins for the accept and reader threads.
+        The worker pool is drained with ``wait=True`` afterwards, so a
+        callback already running can extend ``close()`` past the
+        configured timeout; queued-but-not-yet-running callbacks are
+        cancelled via ``cancel_futures=True``. If you need a hard upper
+        bound, detach the server in a supervisor and reap the process
+        externally.
+
         Args:
-            timeout: Per-thread join timeout; ``None`` waits indefinitely.
+            timeout: Per-thread join timeout for the accept and reader
+                threads; ``None`` waits indefinitely.
         """
         with self._state_lock:
             if not self._running.is_set():
@@ -608,7 +618,9 @@ class TinyServer:
                         f"max {self._max_frame_bytes}); dropping connection"
                     )
                     return
-                body = _recvall(conn, length, self._running.is_set) if length else b""
+                # _recvall returns b"" for n=0 without touching the socket,
+                # so the length==0 path needs no special casing here.
+                body = _recvall(conn, length, self._running.is_set)
                 if body is None:
                     return
                 try:
@@ -1235,7 +1247,7 @@ class TinyClient:
                 )
                 self._shutdown_io()
                 return
-            body = _recvall(sock, length, self._running.is_set) if length else b""
+            body = _recvall(sock, length, self._running.is_set)
             if body is None:
                 if self._running.is_set():
                     self._fail_all_pending(
@@ -1243,6 +1255,10 @@ class TinyClient:
                     )
                 return
             if kind != _MSG_REPLY:
+                _logger.warning(
+                    f"{self.name}: unexpected non-reply frame kind "
+                    f"{kind} on the client socket; ignoring"
+                )
                 continue
             try:
                 req_id, ok, result = _unpack_oob(body)
