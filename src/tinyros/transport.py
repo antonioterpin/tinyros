@@ -373,6 +373,7 @@ class TinyServer:
         *,
         workers: int = _DEFAULT_POOL_WORKERS,
         max_frame_bytes: int | None = None,
+        max_in_flight: int | None = None,
     ) -> None:
         """Initialize the server.
 
@@ -385,6 +386,12 @@ class TinyServer:
                 uses ``TINYROS_MAX_FRAME_BYTES`` or the 256 MiB default.
                 Frames claiming more are rejected without buffering so a
                 misbehaving peer cannot trigger an unbounded allocation.
+            max_in_flight: Maximum number of calls in flight (running +
+                queued) before the reader thread blocks on new frames.
+                Backpressure propagates up through TCP to the client so
+                no call is dropped. ``None`` defaults to ``workers * 3``,
+                which leaves headroom over the thread pool without
+                letting the internal queue grow unboundedly.
         """
         self.name = name
         self.host = host
@@ -394,6 +401,16 @@ class TinyServer:
             if max_frame_bytes is not None
             else _default_max_frame_bytes()
         )
+        effective_in_flight = (
+            max_in_flight if max_in_flight is not None else workers * 3
+        )
+        if effective_in_flight < 1:
+            raise ValueError(
+                "max_in_flight must resolve to at least 1; "
+                f"got {effective_in_flight}"
+            )
+        self._max_in_flight = effective_in_flight
+        self._pool_semaphore = threading.BoundedSemaphore(effective_in_flight)
         self._callbacks: dict[str, Callable[..., Any]] = {}
         self._pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=workers,
@@ -610,13 +627,51 @@ class TinyServer:
         if kind == _MSG_CALL:
             req_id, cb_name, arg = _unpack_oob(body)
             pending = _PendingCall(conn, int(req_id), str(cb_name), arg)
-            self._pool.submit(self._execute_call, pending)
+            self._submit_call(self._execute_call, pending)
         elif kind == _MSG_CALL_LARGE:
-            self._pool.submit(self._execute_large_call, conn, body)
+            self._submit_call(self._execute_large_call, conn, body)
         elif kind == _MSG_BYE:
             return
         else:
             _logger.warning(f"{self.name}: unknown frame kind {kind}")
+
+    def _submit_call(self, fn: Callable[..., Any], *args: Any) -> None:
+        """Submit a call to the worker pool with in-flight backpressure.
+
+        Acquires a semaphore slot first; if the pool is saturated the
+        reader thread blocks here until a worker finishes, which stalls
+        recv on this connection and lets TCP flow control push the
+        queue growth back to the client. The done-callback releases the
+        slot when the call completes.
+
+        If the pool is already shutting down (``ThreadPoolExecutor.submit``
+        raises ``RuntimeError``), release the slot and return quietly
+        rather than tearing down the connection -- this is the expected
+        state during :meth:`close` and should not be reported as a
+        protocol-level failure.
+
+        Args:
+            fn: Worker method (:meth:`_execute_call` or
+                :meth:`_execute_large_call`).
+            *args: Arguments forwarded to ``fn``.
+        """
+        while self._running.is_set():
+            if self._pool_semaphore.acquire(timeout=0.2):
+                break
+        else:
+            return
+        try:
+            fut = self._pool.submit(fn, *args)
+        except RuntimeError:
+            # Pool is shutting down (expected during close()); drop the
+            # slot and the call. Reader loop will notice _running fall
+            # and exit on its own without logging a spurious error.
+            self._pool_semaphore.release()
+            return
+        except Exception:
+            self._pool_semaphore.release()
+            raise
+        fut.add_done_callback(lambda _f: self._pool_semaphore.release())
 
     def _execute_large_call(self, conn: socket.socket, body: bytes) -> None:
         """Unpack a ``CALL_LARGE`` body and run the callback.
