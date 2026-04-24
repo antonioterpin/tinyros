@@ -58,6 +58,7 @@ _HEADER_SIZE = struct.calcsize(_HEADER_FMT)
 _DEFAULT_SHM_THRESHOLD = 65536
 _DEFAULT_POOL_WORKERS = 32
 _ACCEPT_POLL_S = 0.1
+_READ_POLL_S = 1.0
 _CONNECT_TIMEOUT_S = 10.0
 
 _SENTINEL = object()
@@ -75,20 +76,36 @@ def _default_shm_threshold() -> int:
     return max(0, int(raw))
 
 
-def _recvall(sock: socket.socket, n: int) -> bytes | None:
+def _recvall(
+    sock: socket.socket, n: int, should_continue: Callable[[], bool]
+) -> bytes | None:
     """Read exactly ``n`` bytes from ``sock``.
+
+    The caller-provided ``should_continue`` predicate is consulted every
+    time the underlying ``recv`` times out so that a blocked read can
+    observe a shutdown request without relying on the peer closing the
+    socket. The caller must have set a non-``None`` ``socket.settimeout``
+    for the timeout path to be reachable.
 
     Args:
         sock: Connected stream socket.
         n: Number of bytes to read.
+        should_continue: Predicate polled on every ``socket.timeout``;
+            when it returns False, ``_recvall`` aborts and returns
+            ``None``.
 
     Returns:
-        The bytes read, or ``None`` if the peer closed the connection.
+        The bytes read, ``None`` if the peer closed the connection or
+        ``should_continue`` turned False mid-read.
     """
     buf = bytearray()
     while len(buf) < n:
         try:
             chunk = sock.recv(n - len(buf))
+        except TimeoutError:
+            if not should_continue():
+                return None
+            continue
         except (ConnectionResetError, OSError):
             return None
         if not chunk:
@@ -240,7 +257,7 @@ def _try_unlink_shm(name: str) -> None:
 class _PendingCall:
     """Container for an inbound call awaiting dispatch."""
 
-    __slots__ = ("conn", "req_id", "cb_name", "arg")
+    __slots__ = ("arg", "cb_name", "conn", "req_id")
 
     def __init__(
         self,
@@ -302,7 +319,7 @@ class TinyServer:
         self._conns: list[socket.socket] = []
         self._conn_send_locks: dict[int, threading.Lock] = {}
         self._conns_lock = threading.Lock()
-        self._running = False
+        self._running = threading.Event()
         self._started = False
         self._state_lock = threading.Lock()
 
@@ -326,7 +343,7 @@ class TinyServer:
             if self._started:
                 return
             self._started = True
-            self._running = True
+            self._running.set()
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -352,9 +369,9 @@ class TinyServer:
             timeout: Per-thread join timeout; ``None`` waits indefinitely.
         """
         with self._state_lock:
-            if not self._running:
+            if not self._running.is_set():
                 return
-            self._running = False
+            self._running.clear()
 
         if self._server_sock is not None:
             try:
@@ -384,15 +401,20 @@ class TinyServer:
 
     def _accept_loop(self) -> None:
         """Accept inbound connections and spawn a reader per peer."""
-        assert self._server_sock is not None
-        while self._running:
+        server_sock = self._server_sock
+        if server_sock is None:
+            raise RuntimeError(
+                f"{self.name}: accept loop started without a bound socket"
+            )
+        while self._running.is_set():
             try:
-                conn, _ = self._server_sock.accept()
+                conn, _ = server_sock.accept()
             except TimeoutError:
                 continue
             except OSError:
                 return
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            conn.settimeout(_READ_POLL_S)
             with self._conns_lock:
                 self._conns.append(conn)
                 self._conn_send_locks[id(conn)] = threading.Lock()
@@ -412,15 +434,22 @@ class TinyServer:
             conn: Connected peer socket.
         """
         try:
-            while self._running:
-                header = _recvall(conn, _HEADER_SIZE)
+            while self._running.is_set():
+                header = _recvall(conn, _HEADER_SIZE, self._running.is_set)
                 if header is None:
                     return
                 kind, length = struct.unpack(_HEADER_FMT, header)
-                body = _recvall(conn, length) if length else b""
+                body = _recvall(conn, length, self._running.is_set) if length else b""
                 if body is None:
                     return
-                self._handle_frame(conn, kind, body)
+                try:
+                    self._handle_frame(conn, kind, body)
+                except Exception as exc:
+                    _logger.error(
+                        f"{self.name}: frame handler failed "
+                        f"(kind={kind}, peer_fd={conn.fileno()}): {exc}"
+                    )
+                    return
         finally:
             self._drop_conn(conn)
 
@@ -535,8 +564,8 @@ class TinyClient:
 
     Connects to a :class:`TinyServer` and sends CALL / CALL_LARGE frames;
     demultiplexes REPLY frames onto per-request futures. Attribute access
-    returns a callable proxy so the portal-style
-    ``client.on_topic(message)`` invocation pattern continues to work.
+    returns a callable proxy so ``client.on_topic(message)`` dispatches
+    an RPC to the remote callback of that name.
     """
 
     def __init__(
@@ -568,6 +597,7 @@ class TinyClient:
             shm_threshold if shm_threshold is not None else _default_shm_threshold()
         )
         self._sock = self._connect(connect_timeout)
+        self._sock.settimeout(_READ_POLL_S)
         self._send_queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
         self._pending: dict[int, concurrent.futures.Future] = {}
         self._pending_lock = threading.Lock()
@@ -575,7 +605,8 @@ class TinyClient:
         self._req_id_lock = threading.Lock()
         self._pending_shm: set[str] = set()
         self._pending_shm_lock = threading.Lock()
-        self._running = True
+        self._running = threading.Event()
+        self._running.set()
         self._shutdown_called = False
         self._state_lock = threading.Lock()
         self._send_thread = threading.Thread(
@@ -647,7 +678,7 @@ class TinyClient:
             A future that resolves with the callback's return value.
         """
         fut: concurrent.futures.Future = concurrent.futures.Future()
-        if not self._running:
+        if not self._running.is_set():
             fut.set_exception(
                 ConnectionError(f"tinyros client {self.name!r} is no longer running")
             )
@@ -659,7 +690,7 @@ class TinyClient:
             self._pending[req_id] = fut
         try:
             frame, shm_name = self._encode_call(req_id, method, arg)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             with self._pending_lock:
                 self._pending.pop(req_id, None)
             fut.set_exception(exc)
@@ -729,27 +760,29 @@ class TinyClient:
     def _recv_loop(self) -> None:
         """Read REPLY frames and complete the matching futures."""
         while True:
-            header = _recvall(self._sock, _HEADER_SIZE)
+            header = _recvall(self._sock, _HEADER_SIZE, self._running.is_set)
             if header is None:
-                self._fail_all_pending(
-                    ConnectionError(
-                        f"tinyros client {self.name!r}: server closed "
-                        f"the connection"
+                if self._running.is_set():
+                    self._fail_all_pending(
+                        ConnectionError(
+                            f"tinyros client {self.name!r}: server "
+                            f"closed the connection"
+                        )
                     )
-                )
                 return
             kind, length = struct.unpack(_HEADER_FMT, header)
-            body = _recvall(self._sock, length) if length else b""
+            body = _recvall(self._sock, length, self._running.is_set) if length else b""
             if body is None:
-                self._fail_all_pending(
-                    ConnectionError(f"tinyros client {self.name!r}: short read")
-                )
+                if self._running.is_set():
+                    self._fail_all_pending(
+                        ConnectionError(f"tinyros client {self.name!r}: short read")
+                    )
                 return
             if kind != _MSG_REPLY:
                 continue
             try:
                 req_id, ok, result = _unpack_oob(body)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 _logger.error(f"{self.name}: failed to decode reply: {exc}")
                 continue
             with self._pending_lock:
@@ -769,9 +802,10 @@ class TinyClient:
         """Fail one send item and mark the client unusable.
 
         Args:
-            shm_name: Shared-memory block name for the failing send (if any).
+            shm_name: Shared-memory block name for the failing send
+                (if any).
         """
-        self._running = False
+        self._running.clear()
         names: list[str] = []
         if shm_name is not None:
             names.append(shm_name)
@@ -796,7 +830,7 @@ class TinyClient:
         Args:
             exc: Exception to set on each pending future.
         """
-        self._running = False
+        self._running.clear()
         with self._pending_lock:
             pending = dict(self._pending)
             self._pending.clear()
@@ -814,11 +848,11 @@ class TinyClient:
             if self._shutdown_called:
                 return
             self._shutdown_called = True
-            self._running = False
+            self._running.clear()
 
         try:
             self._send_queue.put((_frame(_MSG_BYE, b""), None))
-        except Exception:  # noqa: BLE001
+        except (RuntimeError, ValueError):
             pass
         self._send_queue.put(_SENTINEL)
         if self._send_thread.is_alive():
