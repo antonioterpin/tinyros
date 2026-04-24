@@ -460,6 +460,163 @@ def test_oversized_frame_header_drops_connection(free_port: int) -> None:
         wait_port_free(free_port)
 
 
+def test_client_reconnects_across_server_restart(free_port: int) -> None:
+    """A server restart on the same port must not permanently break the client.
+
+    The first RPC completes against the original server. After the
+    server is closed and a fresh one binds the same port, subsequent
+    calls may fail with ``ConnectionError`` for a short window while
+    the send loop detects the dead socket and reconnects; within the
+    reconnect budget the client should recover and subsequent calls
+    should succeed without tearing the client down.
+    """
+    srv1 = TinyServer(name="srv1", host="127.0.0.1", port=free_port)
+    srv1.bind("echo", lambda x: x)
+    srv1.start(block=False)
+    client = TinyClient(host="127.0.0.1", port=free_port, name="cli-reconnect")
+    try:
+        assert client.call("echo", "before").result(timeout=2.0) == "before"
+        srv1.close(timeout=1.0)
+        wait_port_free(free_port)
+
+        srv2 = TinyServer(name="srv2", host="127.0.0.1", port=free_port)
+        srv2.bind("echo", lambda x: x)
+        srv2.start(block=False)
+        try:
+            deadline = time.monotonic() + 5.0
+            recovered = False
+            while time.monotonic() < deadline:
+                try:
+                    if client.call("echo", "after").result(timeout=1.0) == "after":
+                        recovered = True
+                        break
+                # Python 3.10 keeps concurrent.futures.TimeoutError distinct
+                # from the builtin TimeoutError -- catch broadly so the
+                # retry loop sees both ConnectionError and timeouts.
+                except (ConnectionError, concurrent.futures.TimeoutError):
+                    time.sleep(0.1)
+            assert recovered, (
+                "client never reconnected to the new server within the " "5 s deadline"
+            )
+        finally:
+            srv2.close(timeout=1.0)
+    finally:
+        client.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
+def test_reconnect_releases_failed_frame_shm(free_port: int) -> None:
+    """A CALL_LARGE that fails to send must not leak its shm block.
+
+    Without cleanup the shm name stays in ``_pending_shm`` even after
+    reconnect, and the segment itself never gets unlinked until the
+    client is closed -- repeated failures would exhaust ``/dev/shm``.
+    Break the write side so the CALL_LARGE is guaranteed to hit
+    ``OSError`` at the send boundary, then assert the tracking set
+    drains promptly.
+    """
+    server = TinyServer(name="t-shm-leak", host="127.0.0.1", port=free_port)
+    server.bind("shape_of", lambda arr: arr.shape)
+    server.start(block=False)
+    client = TinyClient(
+        host="127.0.0.1",
+        port=free_port,
+        name="shm-leaker",
+        reconnect_timeout=0.1,
+    )
+    try:
+        client._sock.shutdown(socket.SHUT_WR)  # noqa: SLF001
+        arr = np.ones((256, 256), dtype=np.float32)  # 256 KiB >> 64 KiB
+        fut = client.call("shape_of", arr)
+        with pytest.raises(ConnectionError):
+            fut.result(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        while (
+            len(client._pending_shm) > 0 and time.monotonic() < deadline  # noqa: SLF001
+        ):
+            time.sleep(0.01)
+        with client._pending_shm_lock:  # noqa: SLF001
+            leftover = set(client._pending_shm)  # noqa: SLF001
+        assert leftover == set(), (
+            f"send failure must unlink the CALL_LARGE shm block; "
+            f"still tracking {leftover}"
+        )
+    finally:
+        client.close(timeout=1.0)
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
+def test_reconnect_drops_pre_failure_queued_frames(free_port: int) -> None:
+    """Frames queued before a send failure must not reach the new server.
+
+    Their futures were already failed by ``_fail_all_pending``; sending
+    them after reconnect would trigger callback side-effects with no
+    matching future to receive the reply. Wire up a callback that
+    counts invocations, enqueue several calls against a half-broken
+    socket, let reconnect succeed, then assert the new server never
+    sees the stale frames.
+    """
+    srv2 = TinyServer(name="srv2-drop", host="127.0.0.1", port=free_port)
+    srv2_count = 0
+    srv2_lock = threading.Lock()
+
+    def srv2_counter(_x: object) -> int:
+        nonlocal srv2_count
+        with srv2_lock:
+            srv2_count += 1
+            return srv2_count
+
+    srv2.bind("counter", srv2_counter)
+
+    srv1 = TinyServer(name="srv1-drop", host="127.0.0.1", port=free_port)
+    srv1.bind("counter", lambda _x: None)
+    srv1.start(block=False)
+    client = TinyClient(
+        host="127.0.0.1",
+        port=free_port,
+        name="cli-drop",
+        reconnect_timeout=2.0,
+    )
+    try:
+        client.call("counter", 0).result(timeout=2.0)
+        # Break the socket and enqueue several more before the send
+        # loop gets a chance to run and trip OSError.
+        client._sock.shutdown(socket.SHUT_WR)  # noqa: SLF001
+        srv1.close(timeout=1.0)
+        wait_port_free(free_port)
+        stale = [client.call("counter", i) for i in range(5)]
+
+        srv2.start(block=False)
+        try:
+            for fut in stale:
+                with pytest.raises(ConnectionError):
+                    fut.result(timeout=3.0)
+            # Give reconnect a moment, then issue a fresh call.
+            deadline = time.monotonic() + 3.0
+            ok = False
+            while time.monotonic() < deadline:
+                try:
+                    if client.call("counter", 99).result(timeout=1.0) == 1:
+                        ok = True
+                        break
+                except (ConnectionError, concurrent.futures.TimeoutError):
+                    time.sleep(0.1)
+            assert ok, "reconnect and fresh call should succeed against srv2"
+            with srv2_lock:
+                observed = srv2_count
+            assert observed == 1, (
+                f"srv2 should only see the post-reconnect call; "
+                f"got {observed} total invocations, meaning stale frames "
+                f"replayed across reconnect"
+            )
+        finally:
+            srv2.close(timeout=1.0)
+    finally:
+        client.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
 def test_pending_futures_fail_on_send_failure(free_port: int) -> None:
     """When ``_send_loop`` hits ``OSError``, every pending future must
     resolve with ``ConnectionError`` rather than hang.
