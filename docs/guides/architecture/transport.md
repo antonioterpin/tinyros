@@ -47,6 +47,29 @@ zero-copy side-channel:
 The client tracks outstanding block names so segments never leak if the
 send queue is dropped during shutdown.
 
+### Scope: top-level ndarrays only
+
+The shm path activates **only when the call argument is itself a bare
+ndarray** — `client.call("topic", arr)`. Any structure around the array
+keeps the payload inline:
+
+- `client.call("topic", (header, arr))` — tuple wrapper → inline
+- `client.call("topic", {"img": arr})` — dict wrapper → inline
+- `client.call("topic", MyMessage(image=arr))` — custom class → inline
+
+Inline payloads use pickle protocol 5 with out-of-band buffers, so
+ndarray bytes never land in the main pickle blob. They are still
+copied into the wire payload and sent through the socket, which stays
+fast for small messages but is meaningfully slower than the shm
+side-channel for large arrays.
+
+If you want the fast path for a typed message, either pass the array
+as the top-level argument and send the metadata separately, or shape
+your callback signature so the hot field is the ndarray and the
+auxiliary state lives on the subscriber's own attributes. Walking the
+argument graph to hoist nested ndarrays into shm is a plausible
+future change but is not implemented today.
+
 ## Endpoint abstraction
 
 The transport uses TCP stream sockets (`AF_INET` / `SOCK_STREAM`). Each
