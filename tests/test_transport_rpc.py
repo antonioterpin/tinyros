@@ -306,9 +306,9 @@ def test_1mp_image_roundtrips_via_shm(
     img = rng.integers(0, 256, size=(1024, 1024, 3), dtype=np.uint8)
     expected = int(img.sum())
     fut = client.call("checksum", img)
-    assert fut.result(timeout=3.0) == expected, (
-        "1 MP image should round-trip through shm with bit-identical content"
-    )
+    assert (
+        fut.result(timeout=3.0) == expected
+    ), "1 MP image should round-trip through shm with bit-identical content"
 
 
 def test_call_after_close_fails_cleanly(free_port: int) -> None:
