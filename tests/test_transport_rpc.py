@@ -264,6 +264,56 @@ def test_oversized_frame_header_drops_connection(free_port: int) -> None:
         wait_port_free(free_port)
 
 
+def test_client_drops_on_oversized_reply_header(free_port: int) -> None:
+    """A malicious/buggy server sending an oversized REPLY header tears
+    the client down: pending futures fail fast and the send thread exits.
+    """
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", free_port))
+    listener.listen(1)
+    accepted: list[socket.socket] = []
+    ready = threading.Event()
+
+    def accept_once() -> None:
+        conn, _ = listener.accept()
+        accepted.append(conn)
+        ready.set()
+
+    acceptor = threading.Thread(target=accept_once, daemon=True)
+    acceptor.start()
+
+    client = TinyClient(host="127.0.0.1", port=free_port, name="t-victim")
+    try:
+        assert ready.wait(timeout=2.0), "fake server should accept the client"
+        peer = accepted[0]
+        fut = client.call("echo", "hi")
+        # _MSG_REPLY = 3; length = 2**32 - 1 is absurd and must be rejected.
+        peer.sendall(struct.pack("!BI", 3, 2**32 - 1))
+        with pytest.raises(ConnectionError):
+            fut.result(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        while (
+            client._send_thread.is_alive()  # noqa: SLF001
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert (
+            not client._send_thread.is_alive()
+        ), (  # noqa: SLF001
+            "send thread should exit after the recv loop tears down the client"
+        )
+    finally:
+        for s in accepted:
+            try:
+                s.close()
+            except OSError:
+                pass
+        listener.close()
+        client.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
 def test_max_frame_bytes_kwarg_tightens_cap(free_port: int) -> None:
     """A constructor-level cap overrides the module default."""
     server = TinyServer(

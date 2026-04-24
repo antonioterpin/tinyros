@@ -106,7 +106,7 @@ def _default_max_frame_bytes() -> int:
     if raw is None:
         return _DEFAULT_MAX_FRAME_BYTES
     try:
-        return max(_HEADER_SIZE, int(raw))
+        return max(0, int(raw))
     except ValueError:
         _logger.warning(
             f"TINYROS_MAX_FRAME_BYTES={raw!r} is not an integer; "
@@ -847,6 +847,7 @@ class TinyClient:
                         f"({length} bytes)"
                     )
                 )
+                self._shutdown_io()
                 return
             body = _recvall(self._sock, length, self._running.is_set) if length else b""
             if body is None:
@@ -914,6 +915,28 @@ class TinyClient:
         for fut in pending.values():
             if not fut.done():
                 fut.set_exception(exc)
+
+    def _shutdown_io(self) -> None:
+        """Release the socket and wake the send loop without joining threads.
+
+        Safe to call from a worker thread -- notably :meth:`_recv_loop`,
+        where joining sibling threads would self-deadlock. Idempotent,
+        so :meth:`close` can still run its full shutdown sequence
+        afterwards. Unlinks any shm blocks the send loop never got to.
+        """
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._send_queue.put(_SENTINEL)
+        except (RuntimeError, ValueError):
+            pass
+        with self._pending_shm_lock:
+            stragglers = list(self._pending_shm)
+            self._pending_shm.clear()
+        for name in stragglers:
+            _try_unlink_shm(name)
 
     def close(self, timeout: float | None = 2.0) -> None:
         """Close the client and release resources.
