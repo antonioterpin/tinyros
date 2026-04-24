@@ -12,7 +12,8 @@ import socket
 import struct
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import Any
 
 import numpy as np
 import pytest
@@ -20,59 +21,75 @@ import pytest
 from tests.conftest import wait_port_free
 from tinyros.transport import TinyClient, TinyServer
 
+ServerClientFactory = Callable[..., tuple[TinyServer, TinyClient, int]]
+
 
 @pytest.fixture
 def server_client_pair(
     free_port: int,
-) -> Iterator[tuple[TinyServer, TinyClient, int]]:
-    """Provision a server+client pair on a free port; close both on teardown.
+) -> Iterator[ServerClientFactory]:
+    """Factory yielding a bound+started server and a connected client.
+
+    Callbacks are bound **before** ``server.start()`` because
+    :meth:`TinyServer.bind` is only valid before the server is live --
+    the dispatch path reads ``_callbacks`` without holding the state
+    lock, so late registrations race with in-flight calls. Tests pass
+    their bindings as keyword arguments: ``server_client_pair(add_one=fn)``.
 
     Args:
         free_port: Port the kernel considered free when the test started.
 
     Yields:
-        Tuple ``(server, client, port)`` ready for the test to use.
+        A factory that accepts ``**bindings`` and returns
+        ``(server, client, port)``. Can be called at most once per
+        test (uses ``free_port`` which is a single-port fixture).
     """
-    server = TinyServer(name="t-srv", host="127.0.0.1", port=free_port)
-    server.start(block=False)
-    client = TinyClient(host="127.0.0.1", port=free_port, name="t-cli")
+    resources: list[tuple[TinyServer, TinyClient]] = []
+
+    def _make(**bindings: Callable[..., Any]) -> tuple[TinyServer, TinyClient, int]:
+        server = TinyServer(name="t-srv", host="127.0.0.1", port=free_port)
+        for cb_name, fn in bindings.items():
+            server.bind(cb_name, fn)
+        server.start(block=False)
+        client = TinyClient(host="127.0.0.1", port=free_port, name="t-cli")
+        resources.append((server, client))
+        return server, client, free_port
+
     try:
-        yield server, client, free_port
+        yield _make
     finally:
-        try:
-            client.close(timeout=1.0)
-        finally:
-            server.close(timeout=1.0)
+        for server, client in resources:
+            try:
+                client.close(timeout=1.0)
+            finally:
+                server.close(timeout=1.0)
         wait_port_free(free_port)
 
 
 def test_small_call_roundtrip(
-    server_client_pair: tuple[TinyServer, TinyClient, int],
+    server_client_pair: ServerClientFactory,
 ) -> None:
     """A small RPC returns the callback's value as a Future."""
-    server, client, _ = server_client_pair
-    server.bind("add_one", lambda x: x + 1)
+    _server, client, _ = server_client_pair(add_one=lambda x: x + 1)
     fut = client.call("add_one", 41)
     assert fut.result(timeout=2.0) == 42, "add_one(41) should return 42"
 
 
 def test_attribute_proxy_matches_call(
-    server_client_pair: tuple[TinyServer, TinyClient, int],
+    server_client_pair: ServerClientFactory,
 ) -> None:
     """client.method(x) and client.call('method', x) behave identically."""
-    server, client, _ = server_client_pair
-    server.bind("echo", lambda x: x)
+    _server, client, _ = server_client_pair(echo=lambda x: x)
     fut_attr = client.echo("hi")
     fut_explicit = client.call("echo", "hi")
     assert fut_attr.result(timeout=2.0) == fut_explicit.result(timeout=2.0)
 
 
 def test_large_ndarray_uses_shm_fast_path(
-    server_client_pair: tuple[TinyServer, TinyClient, int],
+    server_client_pair: ServerClientFactory,
 ) -> None:
     """Arrays at/above the shm threshold round-trip correctly."""
-    server, client, _ = server_client_pair
-    server.bind("shape_of", lambda arr: arr.shape)
+    _server, client, _ = server_client_pair(shape_of=lambda arr: arr.shape)
     arr = np.ones((256, 256), dtype=np.float32)  # 256 KiB >> 64 KiB default
     fut = client.call("shape_of", arr)
     assert fut.result(timeout=3.0) == (
@@ -82,22 +99,21 @@ def test_large_ndarray_uses_shm_fast_path(
 
 
 def test_remote_exception_propagates(
-    server_client_pair: tuple[TinyServer, TinyClient, int],
+    server_client_pair: ServerClientFactory,
 ) -> None:
     """Exceptions raised inside the callback surface on the client future."""
-    server, client, _ = server_client_pair
 
     def boom(_: object) -> None:
         raise ValueError("deliberate")
 
-    server.bind("boom", boom)
+    _server, client, _ = server_client_pair(boom=boom)
     fut = client.call("boom", None)
     with pytest.raises(ValueError, match="deliberate"):
         fut.result(timeout=2.0)
 
 
 def test_unpicklable_exception_resolves_future(
-    server_client_pair: tuple[TinyServer, TinyClient, int],
+    server_client_pair: ServerClientFactory,
 ) -> None:
     """A callback raising an exception whose args are not picklable must
     not hang the client.
@@ -108,14 +124,13 @@ def test_unpicklable_exception_resolves_future(
     ``RuntimeError`` describing the original result type, and the caller
     gets a bounded-time resolution.
     """
-    server, client, _ = server_client_pair
 
     def boom(_: object) -> None:
         # A threading.Lock in the exception args is not picklable;
         # pickle.dumps raises TypeError while serializing the tuple.
         raise RuntimeError("synthetic", threading.Lock())
 
-    server.bind("boom", boom)
+    _server, client, _ = server_client_pair(boom=boom)
     fut = client.call("boom", None)
     with pytest.raises(RuntimeError) as excinfo:
         fut.result(timeout=2.0)
@@ -125,27 +140,45 @@ def test_unpicklable_exception_resolves_future(
 
 
 def test_unknown_method_raises_on_client(
-    server_client_pair: tuple[TinyServer, TinyClient, int],
+    server_client_pair: ServerClientFactory,
 ) -> None:
     """Calling a method the server never bound surfaces an error."""
-    _server, client, _ = server_client_pair
+    _server, client, _ = server_client_pair()
     fut = client.call("ghost", None)
     with pytest.raises(AttributeError, match="ghost"):
         fut.result(timeout=2.0)
 
 
 def test_concurrent_calls_all_complete(
-    server_client_pair: tuple[TinyServer, TinyClient, int],
+    server_client_pair: ServerClientFactory,
 ) -> None:
     """Many in-flight calls from multiple threads each get their own reply."""
-    server, client, _ = server_client_pair
-    server.bind("twice", lambda x: x * 2)
+    _server, client, _ = server_client_pair(twice=lambda x: x * 2)
     num = 50
     futures = [client.call("twice", i) for i in range(num)]
     results = [f.result(timeout=3.0) for f in futures]
     assert results == [
         i * 2 for i in range(num)
     ], "each future should resolve to its own double"
+
+
+def test_bind_after_start_raises(free_port: int) -> None:
+    """``bind()`` after ``start()`` must fail loudly.
+
+    The callback map is read from the dispatch thread pool without
+    locking; accepting new registrations while the server is live
+    would race with in-flight calls. Fail at the call site so the
+    pattern ``server.start(); server.bind(...)`` is caught instead of
+    silently ignored or intermittently observable.
+    """
+    server = TinyServer(name="t-bind-late", host="127.0.0.1", port=free_port)
+    server.start(block=False)
+    try:
+        with pytest.raises(RuntimeError, match="after start"):
+            server.bind("noop", lambda _x: None)
+    finally:
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
 
 
 def test_server_close_releases_port(free_port: int) -> None:
@@ -160,17 +193,16 @@ def test_server_close_releases_port(free_port: int) -> None:
 
 
 def test_callbacks_run_concurrently(
-    server_client_pair: tuple[TinyServer, TinyClient, int],
+    server_client_pair: ServerClientFactory,
 ) -> None:
     """Slow callbacks on distinct requests do not serialize each other."""
-    server, client, _ = server_client_pair
     barrier = threading.Barrier(2, timeout=2.0)
 
     def rendezvous(_: object) -> str:
         barrier.wait()
         return "ok"
 
-    server.bind("rendezvous", rendezvous)
+    _server, client, _ = server_client_pair(rendezvous=rendezvous)
     t0 = time.perf_counter()
     f1 = client.call("rendezvous", None)
     f2 = client.call("rendezvous", None)
@@ -184,14 +216,13 @@ def test_callbacks_run_concurrently(
 
 
 def test_large_ndarray_goes_through_shm_path(
-    server_client_pair: tuple[TinyServer, TinyClient, int],
+    server_client_pair: ServerClientFactory,
 ) -> None:
     """Arrays >= threshold are tracked in ``_pending_shm`` during send.
 
     This checks the side-channel is *actually taken*, not just that
     the round-trip happens to produce the right answer.
     """
-    server, client, _ = server_client_pair
     started = threading.Event()
     release = threading.Event()
 
@@ -200,7 +231,7 @@ def test_large_ndarray_goes_through_shm_path(
         release.wait(timeout=2.0)
         return tuple(arr.shape)
 
-    server.bind("slow_echo", slow_echo)
+    _server, client, _ = server_client_pair(slow_echo=slow_echo)
     arr = np.ones((256, 256), dtype=np.float32)  # 256 KiB >> 64 KiB
     fut = client.call("slow_echo", arr)
 
@@ -551,7 +582,7 @@ def test_max_frame_bytes_kwarg_tightens_cap(free_port: int) -> None:
 
 
 def test_1mp_image_roundtrips_via_shm(
-    server_client_pair: tuple[TinyServer, TinyClient, int],
+    server_client_pair: ServerClientFactory,
 ) -> None:
     """A 1 MP RGB image (~3 MB) round-trips unchanged through the shm path.
 
@@ -559,8 +590,9 @@ def test_1mp_image_roundtrips_via_shm(
     payloads, which take the shm side-channel and put only metadata on
     the wire.
     """
-    _server, client, _ = server_client_pair
-    _server.bind("checksum", lambda arr: int(arr.sum()))
+    _server, client, _ = server_client_pair(
+        checksum=lambda arr: int(arr.sum()),
+    )
     rng = np.random.default_rng(42)
     img = rng.integers(0, 256, size=(1024, 1024, 3), dtype=np.uint8)
     expected = int(img.sum())

@@ -380,11 +380,28 @@ class TinyServer:
     def bind(self, name: str, fn: Callable[..., Any]) -> None:
         """Register a callback under ``name``.
 
+        Must be called before :meth:`start`. The callback map is read
+        from the dispatch thread pool without locking; adding entries
+        while inbound calls are in flight would race with callers
+        asking for the same name, and early calls could observe
+        ``AttributeError`` transiently before the registration landed.
+
         Args:
             name: Method name clients will invoke.
             fn: Callable to execute when that method is called.
+
+        Raises:
+            RuntimeError: If called after :meth:`start` (the server is
+                already accepting connections).
         """
-        self._callbacks[name] = fn
+        with self._state_lock:
+            if self._started:
+                raise RuntimeError(
+                    f"{self.name}: bind({name!r}, ...) called after "
+                    f"start(); register all callbacks before starting "
+                    f"the server"
+                )
+            self._callbacks[name] = fn
 
     def start(self, *, block: bool = False) -> None:
         """Start accepting connections.
