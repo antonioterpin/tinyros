@@ -261,27 +261,44 @@ class TinyNode:
     def publish(self, topic: str, message: Any) -> list[concurrent.futures.Future]:
         """Publish ``message`` to every subscriber of ``topic``.
 
+        Never raises synchronously. :meth:`TinyClient.call` always
+        returns a future with any transport error already set on it, so
+        callers must inspect each returned future to observe delivery
+        or callback failures. When a subscriber's client is already
+        torn down the future resolves immediately; the failure is
+        logged here for visibility but the future is still returned so
+        the caller's control flow is identical across sync and async
+        failure paths.
+
         Args:
             topic: Topic name declared in the network config.
             message: Payload forwarded to each subscriber's callback.
 
         Returns:
             One future per subscriber, resolving with the callback's
-            return value (typically ``None``). An empty list is
-            returned when ``topic`` has no subscribers -- no error
-            is raised so publishers can run before their consumers
-            connect.
+            return value (typically ``None``) or with a transport /
+            encoding / remote exception (``ConnectionError`` when the
+            socket is down, ``pickle.PicklingError`` or similar when
+            ``_encode_call`` fails, or whatever the subscriber's
+            callback raised). An empty list is returned when ``topic``
+            has no subscribers -- no error is raised so publishers can
+            run before their consumers connect.
         """
         if topic not in self.topic_calls:
             _logger.warning(f"{self.name}: no subscribers for '{topic}'")
             return []
         futures: list[concurrent.futures.Future] = []
         for client_key, cb_name in self.topic_calls[topic]:
-            try:
-                client = self.clients[client_key]
-                futures.append(client.call(cb_name, message))
-            except (ConnectionError, OSError, RuntimeError) as exc:
-                _logger.error(f"{self.name}: failed to send message - {exc}")
+            fut = self.clients[client_key].call(cb_name, message)
+            if fut.done():
+                exc = fut.exception()
+                if exc is not None:
+                    _logger.warning(
+                        f"{self.name}: immediate failure publishing "
+                        f"'{topic}' -> {cb_name} on {client_key}: "
+                        f"{exc}"
+                    )
+            futures.append(fut)
         return futures
 
     def shutdown(self) -> None:

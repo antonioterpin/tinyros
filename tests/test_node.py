@@ -317,6 +317,40 @@ def test_callback_exception_surfaces_on_publisher_future(
             wait_port_free(p)
 
 
+def test_publish_returns_failed_future_for_closed_client(
+    three_free_ports: list[int],
+) -> None:
+    """``publish()`` must not raise when a subscriber's client is torn
+    down -- it returns an already-failed future instead, matching the
+    async failure path.
+    """
+    cfg = _make_config(_ports(three_free_ports))
+    sub_a = _Recorder("sub_a", cfg)
+    sub_b = _Recorder("sub_b", cfg)
+    pub = TinyNode("pub", cfg, bind_host="127.0.0.1")
+    try:
+        for client in pub.clients.values():
+            client.close(timeout=1.0)
+        futures = pub.publish("topic", "hi")
+        assert len(futures) == 2, (
+            f"publish should still return one future per subscriber "
+            f"when clients are closed; got {len(futures)}"
+        )
+        for fut in futures:
+            assert fut.done(), (
+                "client.call() on a closed client must resolve the "
+                "future synchronously so publish() never raises"
+            )
+            with pytest.raises(ConnectionError):
+                fut.result(timeout=1.0)
+    finally:
+        pub.shutdown()
+        sub_a.shutdown()
+        sub_b.shutdown()
+        for p in three_free_ports:
+            wait_port_free(p)
+
+
 def test_context_manager_shuts_down_on_exit(
     three_free_ports: list[int],
 ) -> None:
