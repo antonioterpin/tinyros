@@ -222,18 +222,41 @@ class TinyNode:
         )
 
     def _setup_subscriptions(self) -> None:
-        """Bind server callbacks for topics this node subscribes to."""
+        """Bind server callbacks for topics this node subscribes to.
+
+        Raises:
+            ValueError: If the config names a callback that is missing
+                on the subclass or resolves to a non-callable attribute.
+                Fails loudly at ``__init__`` time so a typo in
+                ``network_config.yaml`` cannot silently leave a
+                subscription unhandled at runtime.
+        """
         subscribed_topics = self.network_config.get_subscribers_for_node(self.name)
+        # Sentinel so we distinguish "attribute is missing" from
+        # "attribute exists but the subclass shadowed it with None"
+        # (e.g., ``some_cb = None`` as a placeholder). Using ``None``
+        # as the default would conflate the two and blame the user for
+        # a typo when the real issue is a non-callable shadow.
+        _missing = object()
         for topic_name, callback_name in subscribed_topics.items():
-            if hasattr(self, callback_name):
-                self.server.bind(callback_name, getattr(self, callback_name))
-                _logger.info(
-                    f"{self.name}: bound '{callback_name}' " f"for topic '{topic_name}'"
+            attr = getattr(self, callback_name, _missing)
+            if attr is _missing:
+                raise ValueError(
+                    f"{self.name}: network config subscribes topic "
+                    f"'{topic_name}' to callback '{callback_name}', "
+                    f"but no such method is defined on "
+                    f"{type(self).__name__}"
                 )
-            else:
-                _logger.error(
-                    f"{self.name}: callback method " f"'{callback_name}' not found"
+            if not callable(attr):
+                raise ValueError(
+                    f"{self.name}: attribute '{callback_name}' "
+                    f"(bound to topic '{topic_name}') is "
+                    f"{type(attr).__name__}, not callable"
                 )
+            self.server.bind(callback_name, attr)
+            _logger.info(
+                f"{self.name}: bound '{callback_name}' " f"for topic '{topic_name}'"
+            )
 
     def publish(self, topic: str, message: Any) -> list[concurrent.futures.Future]:
         """Publish ``message`` to every subscriber of ``topic``.
