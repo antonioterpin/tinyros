@@ -15,10 +15,11 @@ Wire protocol (framed with a 1-byte kind + 4-byte length header):
 - ``REPLY``: pickled ``(req_id, ok, result_or_exception)``.
 - ``BYE``: graceful disconnect announcement.
 
-The shared-memory side-channel activates when an ndarray payload reaches
-or exceeds ``TINYROS_SHM_THRESHOLD`` bytes (default 64 KiB). It applies
-only when client and server share a kernel (same host); set the threshold
-to ``0`` to disable it.
+The shared-memory side-channel activates when the call argument is an
+ndarray whose ``nbytes`` is at least the configured threshold (default
+64 KiB, set via the ``TINYROS_SHM_THRESHOLD`` env var or the
+``shm_threshold`` constructor kwarg; ``0`` disables the fast path).
+The whole transport assumes a single host.
 
 See ``docs/guides/architecture/transport.md`` for the rationale behind
 the design and the threading model.
