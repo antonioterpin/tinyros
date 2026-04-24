@@ -19,6 +19,13 @@ The shared-memory side-channel activates when the call argument is an
 ndarray whose ``nbytes`` is at least the configured threshold (default
 64 KiB, set via the ``TINYROS_SHM_THRESHOLD`` env var or the
 ``shm_threshold`` constructor kwarg; ``0`` disables the fast path).
+
+Inline frames (CALL without the shm path and every REPLY) are capped at
+``TINYROS_MAX_FRAME_BYTES`` bytes (default 256 MiB) so a misbehaving
+peer cannot force an unbounded allocation by claiming a huge length in
+the header. Override per-instance via the ``max_frame_bytes`` kwarg on
+:class:`TinyServer` / :class:`TinyClient`.
+
 The whole transport assumes a single host.
 
 See ``docs/guides/architecture/transport.md`` for the rationale behind
@@ -57,6 +64,7 @@ _HEADER_SIZE = struct.calcsize(_HEADER_FMT)
 
 _DEFAULT_SHM_THRESHOLD = 65536
 _DEFAULT_POOL_WORKERS = 32
+_DEFAULT_MAX_FRAME_BYTES = 256 * 1024 * 1024
 _ACCEPT_POLL_S = 0.1
 _READ_POLL_S = 1.0
 _CONNECT_TIMEOUT_S = 10.0
@@ -73,7 +81,38 @@ def _default_shm_threshold() -> int:
     raw = os.getenv("TINYROS_SHM_THRESHOLD")
     if raw is None:
         return _DEFAULT_SHM_THRESHOLD
-    return max(0, int(raw))
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        _logger.warning(
+            f"TINYROS_SHM_THRESHOLD={raw!r} is not an integer; "
+            f"falling back to default ({_DEFAULT_SHM_THRESHOLD})"
+        )
+        return _DEFAULT_SHM_THRESHOLD
+
+
+def _default_max_frame_bytes() -> int:
+    """Maximum inline frame body size in bytes (overridable via env).
+
+    Returns:
+        Upper bound the reader loops enforce on the ``length`` field of
+        the wire header. Frames claiming more are rejected without
+        buffering so a misbehaving peer cannot trigger an unbounded
+        allocation. Only affects inline CALL / REPLY payloads -- ndarrays
+        that take the shared-memory side-channel send only metadata on
+        the socket and are unaffected.
+    """
+    raw = os.getenv("TINYROS_MAX_FRAME_BYTES")
+    if raw is None:
+        return _DEFAULT_MAX_FRAME_BYTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        _logger.warning(
+            f"TINYROS_MAX_FRAME_BYTES={raw!r} is not an integer; "
+            f"falling back to default ({_DEFAULT_MAX_FRAME_BYTES})"
+        )
+        return _DEFAULT_MAX_FRAME_BYTES
 
 
 def _recvall(
@@ -296,6 +335,7 @@ class TinyServer:
         port: int,
         *,
         workers: int = _DEFAULT_POOL_WORKERS,
+        max_frame_bytes: int | None = None,
     ) -> None:
         """Initialize the server.
 
@@ -304,10 +344,19 @@ class TinyServer:
             host: Interface address to bind on.
             port: TCP port to bind on.
             workers: Maximum concurrent callback executions.
+            max_frame_bytes: Upper bound on inline frame body size. ``None``
+                uses ``TINYROS_MAX_FRAME_BYTES`` or the 256 MiB default.
+                Frames claiming more are rejected without buffering so a
+                misbehaving peer cannot trigger an unbounded allocation.
         """
         self.name = name
         self.host = host
         self.port = port
+        self._max_frame_bytes = (
+            max_frame_bytes
+            if max_frame_bytes is not None
+            else _default_max_frame_bytes()
+        )
         self._callbacks: dict[str, Callable[..., Any]] = {}
         self._pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=workers,
@@ -439,6 +488,12 @@ class TinyServer:
                 if header is None:
                     return
                 kind, length = struct.unpack(_HEADER_FMT, header)
+                if length > self._max_frame_bytes:
+                    _logger.warning(
+                        f"{self.name}: oversized frame ({length} bytes, "
+                        f"max {self._max_frame_bytes}); dropping connection"
+                    )
+                    return
                 body = _recvall(conn, length, self._running.is_set) if length else b""
                 if body is None:
                     return
@@ -575,6 +630,7 @@ class TinyClient:
         name: str,
         *,
         shm_threshold: int | None = None,
+        max_frame_bytes: int | None = None,
         connect_timeout: float = _CONNECT_TIMEOUT_S,
     ) -> None:
         """Initialize the client and connect to the server.
@@ -587,6 +643,10 @@ class TinyClient:
                 arguments travel through shared memory. ``None`` uses
                 ``TINYROS_SHM_THRESHOLD`` or the 64 KiB default. ``0``
                 disables the shm fast path.
+            max_frame_bytes: Upper bound on inline reply body size. ``None``
+                uses ``TINYROS_MAX_FRAME_BYTES`` or the 256 MiB default.
+                Reply frames claiming more tear the client down instead of
+                buffering.
             connect_timeout: Max seconds to wait for the server to accept
                 the connection.
         """
@@ -595,6 +655,11 @@ class TinyClient:
         self.name = name
         self._shm_threshold = (
             shm_threshold if shm_threshold is not None else _default_shm_threshold()
+        )
+        self._max_frame_bytes = (
+            max_frame_bytes
+            if max_frame_bytes is not None
+            else _default_max_frame_bytes()
         )
         self._sock = self._connect(connect_timeout)
         self._sock.settimeout(_READ_POLL_S)
@@ -771,6 +836,19 @@ class TinyClient:
                     )
                 return
             kind, length = struct.unpack(_HEADER_FMT, header)
+            if length > self._max_frame_bytes:
+                _logger.warning(
+                    f"{self.name}: oversized reply frame ({length} bytes, "
+                    f"max {self._max_frame_bytes}); tearing down"
+                )
+                self._fail_all_pending(
+                    ConnectionError(
+                        f"tinyros client {self.name!r}: oversized reply "
+                        f"({length} bytes)"
+                    )
+                )
+                self._shutdown_io()
+                return
             body = _recvall(self._sock, length, self._running.is_set) if length else b""
             if body is None:
                 if self._running.is_set():
@@ -837,6 +915,28 @@ class TinyClient:
         for fut in pending.values():
             if not fut.done():
                 fut.set_exception(exc)
+
+    def _shutdown_io(self) -> None:
+        """Release the socket and wake the send loop without joining threads.
+
+        Safe to call from a worker thread -- notably :meth:`_recv_loop`,
+        where joining sibling threads would self-deadlock. Idempotent,
+        so :meth:`close` can still run its full shutdown sequence
+        afterwards. Unlinks any shm blocks the send loop never got to.
+        """
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._send_queue.put(_SENTINEL)
+        except (RuntimeError, ValueError):
+            pass
+        with self._pending_shm_lock:
+            stragglers = list(self._pending_shm)
+            self._pending_shm.clear()
+        for name in stragglers:
+            _try_unlink_shm(name)
 
     def close(self, timeout: float | None = 2.0) -> None:
         """Close the client and release resources.

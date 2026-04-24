@@ -8,6 +8,7 @@ and that shutdown releases the port.
 from __future__ import annotations
 
 import socket
+import struct
 import threading
 import time
 from collections.abc import Iterator
@@ -234,6 +235,130 @@ def test_shutdown_releases_blocked_reader(free_port: int) -> None:
     finally:
         raw.close()
         wait_port_free(free_port)
+
+
+def test_oversized_frame_header_drops_connection(free_port: int) -> None:
+    """A peer claiming an absurd frame length is disconnected, not buffered.
+
+    Without a cap the reader would loop inside ``_recvall`` for gigabytes
+    of data the peer never intends to send, tying up the connection and
+    inviting a trivial resource exhaustion.
+    """
+    server = TinyServer(name="t-cap", host="127.0.0.1", port=free_port)
+    server.start(block=False)
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.connect(("127.0.0.1", free_port))
+    try:
+        # CALL kind (1) with length = 2^32-1: no legitimate frame is this big.
+        header = struct.pack("!BI", 1, 2**32 - 1)
+        raw.sendall(header)
+        raw.settimeout(2.0)
+        data = raw.recv(1)
+        assert data == b"", (
+            f"server should close the connection on an oversized frame; "
+            f"got {data!r} instead of EOF"
+        )
+    finally:
+        raw.close()
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
+def test_client_drops_on_oversized_reply_header(free_port: int) -> None:
+    """A malicious/buggy server sending an oversized REPLY header tears
+    the client down: pending futures fail fast and the send thread exits.
+    """
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", free_port))
+    listener.listen(1)
+    accepted: list[socket.socket] = []
+    ready = threading.Event()
+
+    def accept_once() -> None:
+        conn, _ = listener.accept()
+        accepted.append(conn)
+        ready.set()
+
+    acceptor = threading.Thread(target=accept_once, daemon=True)
+    acceptor.start()
+
+    client = TinyClient(host="127.0.0.1", port=free_port, name="t-victim")
+    try:
+        assert ready.wait(timeout=2.0), "fake server should accept the client"
+        peer = accepted[0]
+        fut = client.call("echo", "hi")
+        # _MSG_REPLY = 3; length = 2**32 - 1 is absurd and must be rejected.
+        peer.sendall(struct.pack("!BI", 3, 2**32 - 1))
+        with pytest.raises(ConnectionError):
+            fut.result(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        while (
+            client._send_thread.is_alive()  # noqa: SLF001
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert (
+            not client._send_thread.is_alive()
+        ), (  # noqa: SLF001
+            "send thread should exit after the recv loop tears down the client"
+        )
+    finally:
+        for s in accepted:
+            try:
+                s.close()
+            except OSError:
+                pass
+        listener.close()
+        client.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
+def test_max_frame_bytes_kwarg_tightens_cap(free_port: int) -> None:
+    """A constructor-level cap overrides the module default."""
+    server = TinyServer(
+        name="t-cap-kwarg",
+        host="127.0.0.1",
+        port=free_port,
+        max_frame_bytes=1024,
+    )
+    server.start(block=False)
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.connect(("127.0.0.1", free_port))
+    try:
+        # Frame claims 2 KiB, well under the module default but above our kwarg.
+        header = struct.pack("!BI", 1, 2048)
+        raw.sendall(header)
+        raw.settimeout(2.0)
+        data = raw.recv(1)
+        assert data == b"", (
+            f"server with max_frame_bytes=1024 should drop a 2 KiB frame; "
+            f"got {data!r}"
+        )
+    finally:
+        raw.close()
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
+def test_1mp_image_roundtrips_via_shm(
+    server_client_pair: tuple[TinyServer, TinyClient, int],
+) -> None:
+    """A 1 MP RGB image (~3 MB) round-trips unchanged through the shm path.
+
+    Regression guard: the frame cap must not interfere with real image
+    payloads, which take the shm side-channel and put only metadata on
+    the wire.
+    """
+    _server, client, _ = server_client_pair
+    _server.bind("checksum", lambda arr: int(arr.sum()))
+    rng = np.random.default_rng(42)
+    img = rng.integers(0, 256, size=(1024, 1024, 3), dtype=np.uint8)
+    expected = int(img.sum())
+    fut = client.call("checksum", img)
+    assert (
+        fut.result(timeout=3.0) == expected
+    ), "1 MP image should round-trip through shm with bit-identical content"
 
 
 def test_call_after_close_fails_cleanly(free_port: int) -> None:

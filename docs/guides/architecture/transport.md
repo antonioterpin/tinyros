@@ -85,5 +85,12 @@ Each client runs:
 | Name | Meaning | Default |
 |---|---|---|
 | `TINYROS_SHM_THRESHOLD` | Payload size (bytes) above which ndarrays go via shm | `65536` |
+| `TINYROS_MAX_FRAME_BYTES` | Upper bound on inline frame body size; oversized headers are rejected without buffering | `268435456` (256 MiB) |
 
 Set `TINYROS_SHM_THRESHOLD=0` to force everything inline.
+
+Both limits can also be overridden per instance via the `shm_threshold`
+and `max_frame_bytes` kwargs on `TinyServer` / `TinyClient`. The frame
+cap only affects inline `CALL` and `REPLY` bodies; ndarrays that take
+the shared-memory side-channel send only small metadata on the socket
+and are unaffected.
