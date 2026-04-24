@@ -223,6 +223,127 @@ def test_bind_after_start_raises(free_port: int) -> None:
         wait_port_free(free_port)
 
 
+def test_server_bounded_inflight(free_port: int) -> None:
+    """The server honours ``max_in_flight`` -- backpressure caps the
+    number of simultaneously running/queued calls.
+
+    Spin 10 slow callbacks against a server limited to 3 in flight;
+    peak running count must never exceed 3. Backpressure is applied
+    at the reader, propagated up via TCP, so all 10 eventually
+    complete without any being dropped.
+    """
+    cap = 3
+    started = threading.Semaphore(0)
+    release = threading.Event()
+    counter = {"active": 0, "peak": 0}
+    lock = threading.Lock()
+
+    def slow(_: object) -> str:
+        with lock:
+            counter["active"] += 1
+            counter["peak"] = max(counter["peak"], counter["active"])
+        started.release()
+        release.wait(timeout=5.0)
+        with lock:
+            counter["active"] -= 1
+        return "ok"
+
+    server = TinyServer(
+        name="t-bounded",
+        host="127.0.0.1",
+        port=free_port,
+        max_in_flight=cap,
+    )
+    server.bind("slow", slow)
+    server.start(block=False)
+    client = TinyClient(host="127.0.0.1", port=free_port, name="cli-bounded")
+    try:
+        futures = [client.call("slow", i) for i in range(10)]
+        # Wait for the cap's worth of callbacks to actually be running.
+        for _ in range(cap):
+            assert started.acquire(timeout=2.0), "server never started callbacks"
+        # Give the reader a moment to attempt more submissions; none
+        # should sneak past the cap.
+        time.sleep(0.3)
+        with lock:
+            peak = counter["peak"]
+        assert peak <= cap, f"peak in-flight should never exceed cap={cap}; got {peak}"
+        release.set()
+        for fut in futures:
+            assert fut.result(timeout=5.0) == "ok"
+    finally:
+        client.close(timeout=1.0)
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
+def test_server_max_in_flight_zero_is_rejected(free_port: int) -> None:
+    """A zero (or negative) ``max_in_flight`` must fail construction.
+
+    ``BoundedSemaphore(0)`` permanently blocks the reader on acquire,
+    so every call would eventually time out rather than dispatch.
+    Reject it loudly at construction time instead of silently
+    producing a non-functional server.
+    """
+    with pytest.raises(ValueError, match="at least 1"):
+        TinyServer(
+            name="t-zero",
+            host="127.0.0.1",
+            port=free_port,
+            max_in_flight=0,
+        )
+    with pytest.raises(ValueError, match="at least 1"):
+        TinyServer(
+            name="t-negative",
+            host="127.0.0.1",
+            port=free_port,
+            max_in_flight=-1,
+        )
+
+
+def test_submit_call_survives_pool_shutdown(free_port: int) -> None:
+    """If the worker pool is shut down mid-dispatch, ``_submit_call``
+    must release its semaphore slot and return quietly instead of
+    raising and tearing the connection down.
+
+    Simulates the race by shutting the pool down while the reader is
+    actively dispatching: every new frame hits
+    ``ThreadPoolExecutor.submit`` post-shutdown, which raises
+    ``RuntimeError``. The server-side behaviour should be "drop the
+    call" with no protocol-level fallout.
+    """
+    server = TinyServer(name="t-shutdown", host="127.0.0.1", port=free_port)
+    server.bind("noop", lambda _x: None)
+    server.start(block=False)
+    client = TinyClient(host="127.0.0.1", port=free_port, name="cli-shutdown")
+    try:
+        client.call("noop", 0).result(timeout=2.0)
+        server._pool.shutdown(wait=True, cancel_futures=True)  # noqa: SLF001
+        # With the pool down every new CALL will be dropped by the
+        # server without raising; the reader must not crash the
+        # connection. The client future will time out rather than
+        # resolve, which is the expected trade -- we only assert the
+        # reader stays healthy (the semaphore slot count and the conn
+        # bookkeeping are the observable invariants).
+        starting_slots = server._pool_semaphore._value  # noqa: SLF001
+        for i in range(5):
+            _ = client.call("noop", i)
+        time.sleep(0.2)
+        assert server._pool_semaphore._value == starting_slots, (  # noqa: SLF001
+            "each dropped call must release its slot back to the "
+            "semaphore so the server can still accept more frames"
+        )
+        with server._conns_lock:  # noqa: SLF001
+            assert len(server._conns) == 1, (  # noqa: SLF001
+                "submit RuntimeError must not drop the peer connection; "
+                f"still {len(server._conns)} connections tracked"  # noqa: SLF001
+            )
+    finally:
+        client.close(timeout=1.0)
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
 def test_server_close_releases_port(free_port: int) -> None:
     """After close(), the port becomes bindable again."""
     server = TinyServer(name="t-close", host="127.0.0.1", port=free_port)
