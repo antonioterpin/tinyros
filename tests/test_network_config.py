@@ -47,12 +47,57 @@ def test_load_parses_nodes_into_descriptions() -> None:
 
 
 def test_load_parses_connections_into_subscriptions() -> None:
-    """load_from_config produces TinySubscription lists, not raw dicts."""
+    """load_from_config produces TinySubscription tuples, not raw dicts."""
     cfg = TinyNetworkConfig.load_from_config(_RAW_CONFIG)
-    assert cfg.connections["B"]["t_b"] == [
+    assert cfg.connections["B"]["t_b"] == (
         TinySubscription(actor="A", cb_name="on_b_for_a"),
         TinySubscription(actor="C", cb_name="on_b_for_c"),
-    ], "connections should preserve declaration order and subscription type"
+    ), "connections should preserve declaration order and subscription type"
+
+
+def test_config_is_deeply_immutable() -> None:
+    """Nested mappings and subscription lists reject in-place mutation.
+
+    The dataclass is ``frozen=True``, which used to only prevent
+    rebinding the attribute -- the nested dict/list values could still
+    be mutated silently. With the MappingProxy/tuple wrapping this
+    avenue is gone.
+    """
+    cfg = TinyNetworkConfig.load_from_config(_RAW_CONFIG)
+    with pytest.raises(TypeError):
+        cfg.nodes["X"] = TinyNodeDescription(port=9, host="localhost")  # type: ignore[index]
+    with pytest.raises(TypeError):
+        cfg.connections["A"]["t_a"] = ()  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        # Subscription tuples have no ``append``; this is the common
+        # accidental-mutation case that used to succeed silently.
+        cfg.connections["A"]["t_a"].append(  # type: ignore[attr-defined]
+            TinySubscription(actor="D", cb_name="on_x")
+        )
+
+
+def test_load_rejects_unknown_subscription_actor() -> None:
+    """A subscription naming a node not in ``nodes`` fails at load."""
+    bad = {
+        "nodes": {"A": {"port": 1, "host": "localhost"}},
+        "connections": {
+            "A": {"t": [{"actor": "GHOST", "cb_name": "on_x"}]},
+        },
+    }
+    with pytest.raises(ValueError, match="GHOST"):
+        TinyNetworkConfig.load_from_config(bad)
+
+
+def test_load_rejects_unknown_publisher() -> None:
+    """A publisher not in ``nodes`` fails at load."""
+    bad = {
+        "nodes": {"A": {"port": 1, "host": "localhost"}},
+        "connections": {
+            "GHOST_PUB": {"t": [{"actor": "A", "cb_name": "on_x"}]},
+        },
+    }
+    with pytest.raises(ValueError, match="GHOST_PUB"):
+        TinyNetworkConfig.load_from_config(bad)
 
 
 def test_get_node_by_name_returns_description() -> None:

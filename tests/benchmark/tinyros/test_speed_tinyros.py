@@ -186,7 +186,7 @@ def test_latency_cpu_gpu_payloads(
             "sub": TinyNodeDescription(port=sub_port, host="localhost"),
         },
         connections={
-            "pub": {"topic": [TinySubscription(actor="sub", cb_name="on_msg")]}
+            "pub": {"topic": (TinySubscription(actor="sub", cb_name="on_msg"),)}
         },
     )
 

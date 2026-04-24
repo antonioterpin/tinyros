@@ -18,8 +18,9 @@ from __future__ import annotations
 import atexit
 import concurrent.futures
 import ipaddress
+from collections.abc import Mapping
 from dataclasses import dataclass
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 from typing import Any
 
 from ._logging import get_logger
@@ -90,14 +91,33 @@ class TinyNodeDescription:
 class TinyNetworkConfig:
     """Immutable network topology.
 
+    ``nodes`` and the inner ``connections`` mappings are exposed as
+    read-only ``MappingProxyType`` views, and subscription lists are
+    stored as tuples. Mutation attempts raise ``TypeError`` on the
+    mapping views and ``AttributeError`` on the tuple (e.g., calling
+    ``.append`` on a subscription list), so the frozen-dataclass
+    promise extends to the nested structures, not just attribute
+    rebinding.
+
     Args:
         nodes: Mapping of node name to its :class:`TinyNodeDescription`.
         connections: Mapping of ``publisher_name -> topic_name ->
             subscriptions``.
     """
 
-    nodes: dict[str, TinyNodeDescription]
-    connections: dict[str, dict[str, list[TinySubscription]]]
+    nodes: Mapping[str, TinyNodeDescription]
+    connections: Mapping[str, Mapping[str, tuple[TinySubscription, ...]]]
+
+    def __post_init__(self) -> None:
+        """Freeze nested mappings and subscription lists."""
+        object.__setattr__(self, "nodes", MappingProxyType(dict(self.nodes)))
+        frozen = {
+            publisher: MappingProxyType(
+                {topic: tuple(subs) for topic, subs in topics.items()}
+            )
+            for publisher, topics in self.connections.items()
+        }
+        object.__setattr__(self, "connections", MappingProxyType(frozen))
 
     def get_node_by_name(self, name: str) -> TinyNodeDescription:
         """Look up a node by name.
@@ -117,16 +137,16 @@ class TinyNetworkConfig:
 
     def get_publishers_for_node(
         self, node_name: str
-    ) -> dict[str, list[TinySubscription]]:
+    ) -> Mapping[str, tuple[TinySubscription, ...]]:
         """Get topics that ``node_name`` publishes and their subscribers.
 
         Args:
             node_name: Node whose outbound topics to return.
 
         Returns:
-            Mapping of topic name to the list of subscriptions.
+            Mapping of topic name to the tuple of subscriptions.
         """
-        return self.connections.get(node_name, {})
+        return self.connections.get(node_name, MappingProxyType({}))
 
     def get_subscribers_for_node(self, node_name: str) -> dict[str, str]:
         """Get topics that ``node_name`` subscribes to, keyed by topic.
@@ -146,14 +166,23 @@ class TinyNetworkConfig:
         return subscribers
 
     @classmethod
-    def load_from_config(cls, config: dict) -> TinyNetworkConfig:
+    def load_from_config(cls, config: dict[str, Any]) -> TinyNetworkConfig:
         """Parse a dictionary into a :class:`TinyNetworkConfig`.
+
+        Validates that every publisher and every subscription actor is
+        declared in ``nodes`` before returning, so a typo in the YAML
+        raises a clear error here instead of blowing up later during
+        :class:`TinyNode` setup.
 
         Args:
             config: Raw config dictionary (typically from YAML).
 
         Returns:
             The parsed immutable network config.
+
+        Raises:
+            ValueError: If a publisher or subscription actor references
+                a node name that is not present in ``nodes``.
         """
         nodes = {
             node_name: TinyNodeDescription(
@@ -161,15 +190,28 @@ class TinyNetworkConfig:
             )
             for node_name, node_data in config["nodes"].items()
         }
-        connections: dict[str, dict[str, list[TinySubscription]]] = {}
+        connections: dict[str, dict[str, tuple[TinySubscription, ...]]] = {}
         for publisher_name, topics in config["connections"].items():
+            if publisher_name not in nodes:
+                raise ValueError(
+                    f"network config: publisher {publisher_name!r} has "
+                    f"connections but is not declared in 'nodes'"
+                )
             connections[publisher_name] = {
-                topic_name: [
+                topic_name: tuple(
                     TinySubscription(actor=sub["actor"], cb_name=sub["cb_name"])
                     for sub in subscribers
-                ]
+                )
                 for topic_name, subscribers in topics.items()
             }
+            for topic_name, subs in connections[publisher_name].items():
+                for sub in subs:
+                    if sub.actor not in nodes:
+                        raise ValueError(
+                            f"network config: subscription in "
+                            f"{publisher_name!r}/{topic_name!r} references "
+                            f"actor {sub.actor!r} that is not in 'nodes'"
+                        )
         return cls(nodes=nodes, connections=connections)
 
 
@@ -350,7 +392,13 @@ class TinyNode:
         return futures
 
     def shutdown(self) -> None:
-        """Shut the server and every outbound client down."""
+        """Shut the server and every outbound client down.
+
+        Unregisters the atexit hook up front so long-running processes
+        that create and destroy nodes dynamically don't accumulate
+        stale handlers in the atexit table.
+        """
+        atexit.unregister(self.shutdown)
         _logger.info(f"{self.name}: shutting down")
         try:
             self.server.close()
