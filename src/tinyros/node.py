@@ -292,7 +292,22 @@ class TinyNode:
         self._setup_subscriptions()
         atexit.register(self.shutdown)
         self.server.start(block=False)
-        self._setup_publishing()
+        # If outbound dialing fails (e.g., a peer never came up within
+        # connect_timeout) we have already started the server thread
+        # and registered atexit -- tear those down before re-raising
+        # so __init__ does not leak a running listen socket and a
+        # shutdown hook for an object whose construction failed.
+        try:
+            self._setup_publishing()
+        except BaseException:
+            try:
+                self.shutdown()
+            except Exception as cleanup_exc:
+                _logger.warning(
+                    f"{self.name}: cleanup after failed __init__ "
+                    f"raised: {cleanup_exc}"
+                )
+            raise
 
     def _setup_publishing(self) -> None:
         """Open clients to each peer this node publishes to."""
