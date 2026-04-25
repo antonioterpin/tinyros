@@ -547,7 +547,25 @@ class TinyServer:
             except Exception as exc:
                 ok = False
                 result = exc
-        body = _pack_oob((call.req_id, ok, result))
+        try:
+            body = _pack_oob((call.req_id, ok, result))
+        except Exception as pickle_exc:
+            _logger.warning(
+                f"{self.name}: reply for {call.cb_name!r} "
+                f"(req_id={call.req_id}) is not picklable ({pickle_exc}); "
+                f"substituting a RuntimeError so the caller does not hang"
+            )
+            body = _pack_oob(
+                (
+                    call.req_id,
+                    False,
+                    RuntimeError(
+                        f"tinyros server {self.name!r}: reply for "
+                        f"{call.cb_name!r} is not serializable "
+                        f"({type(result).__name__}: {pickle_exc})"
+                    ),
+                )
+            )
         frame = _frame(_MSG_REPLY, body)
         lock = self._conn_send_locks.get(id(call.conn))
         if lock is None:
