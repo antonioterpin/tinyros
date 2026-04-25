@@ -665,6 +665,45 @@ def test_call_large_shm_missing_returns_failure_reply(free_port: int) -> None:
         wait_port_free(free_port)
 
 
+def test_call_large_corrupt_metadata_drops_connection(free_port: int) -> None:
+    """A CALL_LARGE whose metadata pickle does not parse must not hang
+    the caller indefinitely.
+
+    Before the fix the worker logged the parse error and returned;
+    there was no ``req_id`` to address a synthesized REPLY to and no
+    teardown was triggered, so the caller's future stayed pending
+    forever (or until a separate timeout/teardown happened to land).
+    Now the server treats this as a protocol error and drops the peer
+    connection; the client's recv loop notices the EOF and fails
+    every pending future with ``ConnectionError`` in bounded time.
+    """
+    from tinyros.transport import (  # type: ignore[attr-defined]
+        _MSG_CALL_LARGE,
+        _frame,
+    )
+
+    server = TinyServer(name="t-corrupt-meta", host="127.0.0.1", port=free_port)
+    server.bind("noop", lambda _x: None)
+    server.start(block=False)
+    client = TinyClient(host="127.0.0.1", port=free_port, name="t-corrupt-meta-cli")
+    try:
+        # Push a CALL_LARGE whose body is not a valid pickle. Register
+        # a future under a fresh req_id so we can assert it gets failed
+        # by the dropped-connection path.
+        bogus = _frame(_MSG_CALL_LARGE, b"\x00not a pickle\x00")
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        with client._pending_lock:  # noqa: SLF001
+            client._pending[12345] = fut  # noqa: SLF001
+        client._send_queue.put((bogus, None))  # noqa: SLF001
+
+        with pytest.raises(ConnectionError):
+            fut.result(timeout=2.0)
+    finally:
+        client.close(timeout=1.0)
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
 def test_pending_futures_fail_on_send_failure(free_port: int) -> None:
     """When ``_send_loop`` hits ``OSError``, every pending future must
     resolve with ``ConnectionError`` rather than hang.
