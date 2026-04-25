@@ -200,6 +200,77 @@ def test_init_rejects_unknown_node_name(
         TinyNode("ghost", cfg, bind_host="127.0.0.1")
 
 
+def test_init_rejects_missing_subscription_callback(
+    three_free_ports: list[int],
+) -> None:
+    """A subscription naming a method that doesn't exist fails at init.
+
+    Previously this was a silent log-and-continue; a typo in
+    ``network_config.yaml`` left the subscriber bound to nothing and the
+    publisher's messages vanished without trace. Loud failure lets the
+    operator fix the config before anything starts running.
+    """
+    cfg = _make_config(_ports(three_free_ports))
+    sub_port = three_free_ports[1]
+    try:
+        with pytest.raises(ValueError, match="on_topic"):
+            # Bare TinyNode has no ``on_topic`` method, but the config
+            # wires sub_a to invoke ``on_topic`` — init must reject this.
+            TinyNode("sub_a", cfg, bind_host="127.0.0.1")
+    finally:
+        wait_port_free(sub_port)
+
+
+class _ShadowedCallback(TinyNode):
+    """Subclass that shadows the configured callback name with a value."""
+
+    on_topic = "not a method"  # type: ignore[assignment]
+
+
+class _NoneShadowedCallback(TinyNode):
+    """Subclass that shadows the callback name with ``None``.
+
+    Guards against conflating ``getattr(..., None)`` returning ``None``
+    because the attribute is missing with ``None`` being the attribute
+    itself. The two failure modes need different error messages.
+    """
+
+    on_topic = None  # type: ignore[assignment]
+
+
+def test_init_rejects_non_callable_callback(
+    three_free_ports: list[int],
+) -> None:
+    """If the callback name resolves to a non-callable attribute, raise."""
+    cfg = _make_config(_ports(three_free_ports))
+    sub_port = three_free_ports[1]
+    try:
+        with pytest.raises(ValueError, match="not callable"):
+            _ShadowedCallback("sub_a", cfg, bind_host="127.0.0.1")
+    finally:
+        wait_port_free(sub_port)
+
+
+def test_init_distinguishes_missing_from_none_shadow(
+    three_free_ports: list[int],
+) -> None:
+    """A ``None``-valued attribute must report "not callable", not "missing".
+
+    The original implementation used ``getattr(self, name, None)`` and
+    branched on ``attr is None``, which conflates "no such attribute"
+    (the common typo path) with "attribute exists but is ``None``" (a
+    subclass placeholder or an accidental ``= None``). Use a sentinel
+    default so the two surfaces tell the operator which one they hit.
+    """
+    cfg = _make_config(_ports(three_free_ports))
+    sub_port = three_free_ports[1]
+    try:
+        with pytest.raises(ValueError, match="NoneType.*not callable"):
+            _NoneShadowedCallback("sub_a", cfg, bind_host="127.0.0.1")
+    finally:
+        wait_port_free(sub_port)
+
+
 class _Boomer(TinyNode):
     """Subscriber whose callback always raises."""
 
@@ -251,12 +322,13 @@ def test_context_manager_shuts_down_on_exit(
 ) -> None:
     """``with TinyNode(...) as n:`` releases the port on block exit.
 
-    We pick ``sub_a`` because it only binds a listener and has no
-    outbound publishing in the test topology -- the context-manager
-    contract is independent of whether the node publishes.
+    We use ``sub_a`` via :class:`_Recorder` because the topology wires
+    it to the ``on_topic`` callback — the context-manager contract is
+    independent of whether the node publishes, but ``__init__`` still
+    verifies every declared subscription resolves to a real method.
     """
     cfg = _make_config(_ports(three_free_ports))
     sub_a_port = three_free_ports[1]
-    with TinyNode("sub_a", cfg, bind_host="127.0.0.1"):
+    with _Recorder("sub_a", cfg):
         pass
     wait_port_free(sub_a_port)
