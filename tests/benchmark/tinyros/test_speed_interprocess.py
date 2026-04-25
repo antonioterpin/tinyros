@@ -116,7 +116,7 @@ def _make_network(pub_port: int, sub_port: int) -> TinyNetworkConfig:
         },
         connections={
             "pub": {
-                "topic": [TinySubscription(actor="sub", cb_name="on_msg")],
+                "topic": (TinySubscription(actor="sub", cb_name="on_msg"),),
             },
         },
     )

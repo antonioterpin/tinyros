@@ -37,10 +37,10 @@ def _make_config(ports: dict[str, int]) -> TinyNetworkConfig:
         },
         connections={
             "pub": {
-                "topic": [
+                "topic": (
                     TinySubscription(actor="sub_a", cb_name="on_topic"),
                     TinySubscription(actor="sub_b", cb_name="on_topic"),
-                ],
+                ),
             },
         },
     )
