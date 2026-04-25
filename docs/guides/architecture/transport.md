@@ -50,12 +50,16 @@ send queue is dropped during shutdown.
 ### Scope: top-level ndarrays only
 
 The shm path activates **only when the call argument is itself a bare
-ndarray** — `client.call("topic", arr)`. Any structure around the array
-keeps the payload inline:
+ndarray** — `client.call("on_image", arr)`. Any structure around the
+array keeps the payload inline:
 
-- `client.call("topic", (header, arr))` — tuple wrapper → inline
-- `client.call("topic", {"img": arr})` — dict wrapper → inline
-- `client.call("topic", MyMessage(image=arr))` — custom class → inline
+- `client.call("on_image", (header, arr))` — tuple wrapper → inline
+- `client.call("on_image", {"img": arr})` — dict wrapper → inline
+- `client.call("on_image", MyMessage(image=arr))` — custom class → inline
+
+(`TinyClient.call` takes a remote callback name as its first argument,
+not a topic. `TinyNode.publish("topic", msg)` resolves the topic to one
+or more `client.call(cb_name, msg)` invocations under the hood.)
 
 Inline payloads use pickle protocol 5 with out-of-band buffers, so
 ndarray bytes never land in the main pickle blob. They are still
