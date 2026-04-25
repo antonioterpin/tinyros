@@ -830,6 +830,15 @@ class TinyClient:
         with self._req_id_lock:
             req_id = self._next_req_id
             self._next_req_id += 1
+        try:
+            frame, shm_name = self._encode_call(req_id, method, arg)
+        except Exception as exc:
+            fut.set_exception(exc)
+            return fut
+        # Insert into _pending and put on _send_queue under one lock so
+        # the failure-handling block in _send_loop (which holds the same
+        # lock around fail-pending + drain-queue) cannot interleave and
+        # silently drop a frame whose future is still pending.
         with self._pending_lock:
             if not self._running.is_set():
                 fut.set_exception(
@@ -837,16 +846,13 @@ class TinyClient:
                         f"tinyros client {self.name!r} is no longer running"
                     )
                 )
+                if shm_name is not None:
+                    with self._pending_shm_lock:
+                        self._pending_shm.discard(shm_name)
+                    _try_unlink_shm(shm_name)
                 return fut
             self._pending[req_id] = fut
-        try:
-            frame, shm_name = self._encode_call(req_id, method, arg)
-        except Exception as exc:
-            with self._pending_lock:
-                self._pending.pop(req_id, None)
-            fut.set_exception(exc)
-            return fut
-        self._send_queue.put((frame, shm_name))
+            self._send_queue.put((frame, shm_name))
         return fut
 
     def _encode_call(
@@ -902,6 +908,11 @@ class TinyClient:
         the reconnect succeeds the loop resumes on the new socket;
         callers who need the failed frame re-delivered must re-issue
         it. If the reconnect fails the client is torn down permanently.
+
+        ``_running`` is consulted before reconnecting: if another path
+        (notably ``_recv_loop``'s oversized-reply teardown) cleared the
+        flag while a frame was in flight, the OSError that follows on
+        the next ``sendall`` must not revive the client.
         """
         while True:
             item = self._send_queue.get()
@@ -915,12 +926,28 @@ class TinyClient:
                 exc_for_pending = ConnectionError(
                     f"tinyros client {self.name!r}: send failed ({exc})"
                 )
-                self._fail_all_pending(exc_for_pending)
-                # Server never consumed this frame, so unlink its shm
-                # block ourselves before draining further queued frames.
-                self._unlink_orphan_shm(shm_name)
-                self._drain_queued_sends()
-                if self._shutdown_called or not self._try_reconnect():
+                # Hold _pending_lock across the snapshot + clear + drain
+                # so a concurrent ``call()`` (which takes the same lock
+                # around insert + put) cannot slip a frame past us:
+                # either its insert+put completes before us and is
+                # included in the failure, or it waits for the lock,
+                # observes the cleared state (post-_stop_running) or
+                # the new socket, and behaves correctly.
+                with self._pending_lock:
+                    pending_snapshot = dict(self._pending)
+                    self._pending.clear()
+                    # Server never consumed the failing frame, so unlink
+                    # its shm block before draining further queued frames.
+                    self._unlink_orphan_shm(shm_name)
+                    self._drain_queued_sends()
+                for fut in pending_snapshot.values():
+                    if not fut.done():
+                        fut.set_exception(exc_for_pending)
+                if (
+                    self._shutdown_called
+                    or not self._running.is_set()
+                    or not self._try_reconnect()
+                ):
                     self._stop_running(exc_for_pending)
                     self._shutdown_io()
                     return
