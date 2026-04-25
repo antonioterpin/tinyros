@@ -98,6 +98,48 @@ def test_large_ndarray_uses_shm_fast_path(
     ), "server should observe the full ndarray through shm"
 
 
+def test_noncontiguous_view_roundtrips_via_shm(
+    server_client_pair: ServerClientFactory,
+) -> None:
+    """A non-contiguous ndarray *view* takes the shm path and arrives intact.
+
+    A view is itself an ``ndarray`` (``isinstance`` check on the encoder
+    is true) and ``view.nbytes`` is the *logical* extent (shape *
+    itemsize), not the underlying base buffer's size. So a strided slice
+    above the threshold qualifies for the fast path on its own merits;
+    a small slice of a giant base stays inline. The encoder copies via
+    ``target[...] = view``, which is element-wise and faithfully
+    materializes a non-contiguous source into the contiguous shm buffer.
+    The receiver gets a fresh contiguous copy of the same shape, dtype,
+    and values; view semantics (sharing memory with the base) do not --
+    and cannot -- survive cross-process delivery.
+    """
+
+    def echo_arr(arr: np.ndarray) -> np.ndarray:
+        return arr
+
+    _server, client, _ = server_client_pair(echo_arr=echo_arr)
+    # Base is 4 MiB; the strided view is 1 MiB logical, non-contiguous.
+    # Both the base and the view exceed the default 64 KiB threshold,
+    # so the view alone is enough to trigger the shm path.
+    base = np.arange(1024 * 1024, dtype=np.float32).reshape(1024, 1024)
+    view = base[::2, ::2]
+    assert not view.flags["C_CONTIGUOUS"], "view must be non-contiguous for this test"
+    assert view.nbytes < base.nbytes, "view.nbytes should reflect the logical extent"
+
+    fut = client.call("echo_arr", view)
+    received = fut.result(timeout=3.0)
+
+    assert isinstance(
+        received, np.ndarray
+    ), f"expected ndarray, got {type(received).__name__}"
+    assert received.shape == view.shape, f"shape: {received.shape!r} vs {view.shape!r}"
+    assert received.dtype == view.dtype, f"dtype: {received.dtype!r} vs {view.dtype!r}"
+    assert np.array_equal(
+        received, view
+    ), "non-contiguous view should arrive with bit-identical values"
+
+
 def test_remote_exception_propagates(
     server_client_pair: ServerClientFactory,
 ) -> None:

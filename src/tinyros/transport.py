@@ -9,7 +9,7 @@ Two public classes:
 
 Wire protocol (framed with a 1-byte kind + 4-byte length header):
 
-- ``CALL``: inline pickle-protocol-5 payload with out-of-band buffers.
+- ``CALL``: inline pickle protocol 5 payload with out-of-band buffers.
 - ``CALL_LARGE``: metadata frame whose single ndarray payload travels
   through :mod:`multiprocessing.shared_memory`, bypassing the socket.
 - ``REPLY``: pickled ``(req_id, ok, result_or_exception)``.
@@ -19,6 +19,10 @@ The shared-memory side-channel activates when the call argument is an
 ndarray whose ``nbytes`` is at least the configured threshold (default
 64 KiB, set via the ``TINYROS_SHM_THRESHOLD`` env var or the
 ``shm_threshold`` constructor kwarg; ``0`` disables the fast path).
+Only **top-level** ndarrays trigger the fast path -- arrays nested
+inside a tuple, dict, or custom message class travel inline via
+pickle protocol 5 out-of-band buffers. Pass a bare ndarray as the call argument
+when you want cross-process delivery to skip the socket copy.
 
 Inline frames (CALL without the shm path and every REPLY) are capped at
 ``TINYROS_MAX_FRAME_BYTES`` bytes (default 256 MiB) so a misbehaving
@@ -798,6 +802,14 @@ class TinyClient:
 
     def call(self, method: str, arg: Any) -> concurrent.futures.Future:
         """Send an RPC call and return a future for the reply.
+
+        When ``arg`` is a bare ndarray whose ``nbytes`` meets the shm
+        threshold, the array travels through shared memory. Nested
+        ndarrays (inside a tuple, dict, or custom message class) always
+        travel inline via pickle protocol 5 out-of-band buffers. For
+        cross-process delivery, that path still copies the bytes
+        through the socket. Pass the array at the top level when the
+        shm fast path matters.
 
         Args:
             method: Callback name registered on the server.

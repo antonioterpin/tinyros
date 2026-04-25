@@ -47,6 +47,50 @@ zero-copy side-channel:
 The client tracks outstanding block names so segments never leak if the
 send queue is dropped during shutdown.
 
+### Scope: top-level ndarrays only
+
+The shm path activates **only when the call argument is itself a bare
+ndarray** — `client.call("on_image", arr)`. Any structure around the
+array keeps the payload inline:
+
+- `client.call("on_image", (header, arr))` — tuple wrapper → inline
+- `client.call("on_image", {"img": arr})` — dict wrapper → inline
+- `client.call("on_image", MyMessage(image=arr))` — custom class → inline
+
+(`TinyClient.call` takes a remote callback name as its first argument,
+not a topic. `TinyNode.publish("topic", msg)` resolves the topic to one
+or more `client.call(cb_name, msg)` invocations under the hood.)
+
+Inline payloads use pickle protocol 5 with out-of-band buffers, so
+ndarray bytes never land in the main pickle blob. They are still
+copied into the wire payload and sent through the socket, which stays
+fast for small messages but is meaningfully slower than the shm
+side-channel for large arrays.
+
+If you want the fast path for a typed message, either pass the array
+as the top-level argument and send the metadata separately, or shape
+your callback signature so the hot field is the ndarray and the
+auxiliary state lives on the subscriber's own attributes. Walking the
+argument graph to hoist nested ndarrays into shm is a plausible
+future change but is not implemented today.
+
+### Views and non-contiguous arrays
+
+Numpy *views* (slices, transposes, reshapes that share memory with a
+base array) are themselves ndarrays, so they enter the fast path under
+the same rule as a freshly allocated array. The threshold is evaluated
+against `view.nbytes` -- the *logical* extent (`prod(shape) * itemsize`),
+not the underlying base buffer's size. A small slice of a multi-GiB
+array therefore stays inline; a large strided view of the same array
+travels via shm on its own merits.
+
+Whatever the source's contiguity, the encoder writes a fresh
+C-contiguous copy of the view's logical extent into the shm block (via
+`target[...] = view`), and the receiver materializes a fresh contiguous
+ndarray of the same shape, dtype, and values. View semantics -- sharing
+memory with the base on the sender -- do not, and cannot, survive
+cross-process delivery; the receiver always owns its own buffer.
+
 ## Endpoint abstraction
 
 The transport uses TCP stream sockets (`AF_INET` / `SOCK_STREAM`). Each
