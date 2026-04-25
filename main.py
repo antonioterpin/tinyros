@@ -244,7 +244,17 @@ def main() -> None:
             p.kill()
         for p in stragglers:
             p.join(timeout=2.0)
-        _logger.info("all processes stopped")
+        # A child stuck in an uninterruptible kernel call (D-state) can
+        # survive ``kill()``; reflect that in the log so the operator
+        # knows the parent is leaving non-daemon children behind.
+        survivors = [p for p in procs if p.is_alive()]
+        if survivors:
+            _logger.error(
+                f"failed to stop {len(survivors)} process(es): "
+                f"{[p.name for p in survivors]}"
+            )
+        else:
+            _logger.info("all processes stopped")
 
 
 if __name__ == "__main__":
