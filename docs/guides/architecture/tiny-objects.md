@@ -13,7 +13,7 @@ Operational reference for `TinyServer`, `TinyClient`, and `TinyNode`. The wire p
 1. **`__init__`** — allocate the worker pool, the in-flight semaphore, and per-connection bookkeeping. No socket activity yet.
 2. **`bind(name, fn)`** — register a callback. Must run before `start()`; the dispatch path reads `_callbacks` without locking, so accepting new bindings while inbound calls are in flight would race. `bind` after `start` raises `RuntimeError`.
 3. **`start(block=False)`** — bind the listen socket, spawn the accept thread, and (optionally) join it. Synchronous: by the time `start` returns, peers can connect.
-4. **`close(timeout=...)`** — clear the running flag, close the listen socket, shut down every peer socket to break reader `recv()` calls, then join accept + reader threads with the caller's timeout. The worker pool is drained with `wait=True` afterwards, so an already-running callback can extend `close()` past the configured timeout. `cancel_futures=True` prevents queued-but-not-yet-running callbacks from starting.
+4. **`close(timeout=...)`** — clear the running flag, close the listen socket, and join the accept thread *first*. Only after the accept loop is gone do we snapshot and shut down every peer socket to break reader `recv()` calls (this avoids a race where a just-accepted connection could miss the snapshot and leak its reader thread); then join the reader threads with the caller's timeout. The worker pool is drained with `wait=True` afterwards, so an already-running callback can extend `close()` past the configured timeout. `cancel_futures=True` prevents queued-but-not-yet-running callbacks from starting.
 
 ### Worker pool and in-flight cap
 
@@ -60,7 +60,7 @@ The choreography (steps 2–4 run under `_pending_lock`; `call()` takes the same
 5. **Try to reconnect** (`_try_reconnect`) — but only if `_running` is still set and `_shutdown_called` is false. If another path already tore the client down (notably `_recv_loop`'s oversized-reply branch, which clears `_running`), skip reconnect and let the loop exit cleanly:
    - Shut down and close the old socket (wakes the old recv thread on EOF).
    - Briefly join the old recv thread.
-   - Call `_connect(reconnect_timeout)` (default 2 s) with retry/backoff.
+   - Call `_connect(reconnect_timeout)` (default 2 s) in a retry loop with a small fixed delay (50 ms) between attempts.
    - On success: swap in the new socket, spawn a fresh recv thread bound to it. The send loop resumes; subsequent calls succeed against the new server.
    - On failure: the client is torn down permanently — `_stop_running` + `_shutdown_io`.
 
@@ -111,7 +111,12 @@ A future failing here means a single subscriber's RPC failed (server down, callb
 
 ### Shutdown timeouts
 
-`TinyServer.close(timeout=...)` and `TinyClient.close(timeout=...)` both honour `timeout` only for thread joins. A worker callback already running can extend `close` past the budget (server: pool drained with `wait=True`); a slow `BYE` send can extend the client `close` similarly. For a hard upper bound, run the node in a supervisor and reap externally.
+`TinyServer.close(timeout=...)` and `TinyClient.close(timeout=...)` both use `timeout` for thread joins, but they diverge after that:
+
+- **Server**: the worker pool is drained with `wait=True` *after* the joins, so an already-running callback can extend `close()` past the budget. The timeout does not bound this drain.
+- **Client**: the send/recv joins are themselves bounded by `timeout`. There is no equivalent unbounded drain. The only path that can block indefinitely is the `timeout=None` overload (which is what the parameter name implies on POSIX).
+
+For a hard upper bound on either side, run the node in a supervisor and reap externally.
 
 ### Unknown frame kinds
 

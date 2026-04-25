@@ -437,8 +437,8 @@ def test_cyclic_topology_starts_without_deadlock(
             "Y": TinyNodeDescription(host="127.0.0.1", port=port_y),
         },
         connections={
-            "X": {"x_to_y": [TinySubscription(actor="Y", cb_name="on_x")]},
-            "Y": {"y_to_x": [TinySubscription(actor="X", cb_name="on_y")]},
+            "X": {"x_to_y": (TinySubscription(actor="Y", cb_name="on_x"),)},
+            "Y": {"y_to_x": (TinySubscription(actor="X", cb_name="on_y"),)},
         },
     )
 
