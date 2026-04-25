@@ -25,6 +25,7 @@
 #   - build: Changes affecting the build system or external dependencies
 #   - chore: Maintenance or tasks not affecting the code (e.g., version bumps)
 #   - ci: Changes to CI configuration files or scripts
+#   - release: Version bump / release commit
 # - "scope" is optional but helps provide context (e.g., module, feature, or component).
 # - "subject" should be concise and imperative (e.g., "add feature for user profile").
 # - Body provides additional detail, if needed (wrap at 72 characters per line).
