@@ -28,6 +28,7 @@ from ._common import (
     _default_shm_threshold,
     _logger,
 )
+from ._errors import ConnectionLost, SerializationError
 from ._framing import (
     _frame,
     _pack_call_large,
@@ -155,7 +156,7 @@ class TinyClient:
             The connected stream socket.
 
         Raises:
-            ConnectionError: If no connection could be established.
+            ConnectionLost: If no connection could be established.
         """
         deadline = time.monotonic() + timeout
         last_exc: OSError | None = None
@@ -172,7 +173,7 @@ class TinyClient:
             sock.settimeout(None)
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             return sock
-        raise ConnectionError(
+        raise ConnectionLost(
             f"tinyros client {self.name!r} could not connect to "
             f"{self.host}:{self.port} within {timeout:.1f}s: {last_exc}"
         )
@@ -211,7 +212,7 @@ class TinyClient:
         fut: concurrent.futures.Future = concurrent.futures.Future()
         if not self._running.is_set():
             fut.set_exception(
-                ConnectionError(f"tinyros client {self.name!r} is no longer running")
+                ConnectionLost(f"tinyros client {self.name!r} is no longer running")
             )
             return fut
         with self._req_id_lock:
@@ -220,7 +221,12 @@ class TinyClient:
         try:
             frame, shm_name = self._encode_call(req_id, method, arg)
         except Exception as exc:
-            fut.set_exception(exc)
+            fut.set_exception(
+                SerializationError(
+                    f"tinyros client {self.name!r}: failed to encode call to "
+                    f"{method!r}: {exc}"
+                )
+            )
             return fut
         # Insert into _pending and put on _send_queue under one lock so
         # the failure-handling block in _send_loop (which holds the same
@@ -229,9 +235,7 @@ class TinyClient:
         with self._pending_lock:
             if not self._running.is_set():
                 fut.set_exception(
-                    ConnectionError(
-                        f"tinyros client {self.name!r} is no longer running"
-                    )
+                    ConnectionLost(f"tinyros client {self.name!r} is no longer running")
                 )
                 if shm_name is not None:
                     with self._pending_shm_lock:
@@ -304,7 +308,7 @@ class TinyClient:
                 self._sock.sendall(frame)
             except OSError as exc:
                 _logger.warning(f"{self.name}: send failed ({exc})")
-                exc_for_pending = ConnectionError(
+                exc_for_pending = ConnectionLost(
                     f"tinyros client {self.name!r}: send failed ({exc})"
                 )
                 # Hold _pending_lock across the snapshot + clear + drain
@@ -398,7 +402,7 @@ class TinyClient:
             if header is None:
                 if self._running.is_set():
                     self._fail_all_pending(
-                        ConnectionError(
+                        ConnectionLost(
                             f"tinyros client {self.name!r}: server "
                             f"closed the connection"
                         )
@@ -411,7 +415,7 @@ class TinyClient:
                     f"max {self._max_frame_bytes}); tearing down"
                 )
                 self._stop_running(
-                    ConnectionError(
+                    ConnectionLost(
                         f"tinyros client {self.name!r}: oversized reply "
                         f"({length} bytes)"
                     )
@@ -422,7 +426,7 @@ class TinyClient:
             if body is None:
                 if self._running.is_set():
                     self._fail_all_pending(
-                        ConnectionError(f"tinyros client {self.name!r}: short read")
+                        ConnectionLost(f"tinyros client {self.name!r}: short read")
                     )
                 return
             if kind != _MSG_REPLY:
@@ -434,7 +438,10 @@ class TinyClient:
             try:
                 req_id, ok, result = _unpack_oob(body)
             except Exception as exc:
-                _logger.error(f"{self.name}: failed to decode reply: {exc}")
+                _logger.error(
+                    f"{self.name}: failed to decode reply: "
+                    f"{type(exc).__name__}: {exc}",
+                )
                 continue
             with self._pending_lock:
                 fut = self._pending.pop(int(req_id), None)
@@ -512,7 +519,7 @@ class TinyClient:
             self._recv_thread.join(timeout=1.0)
         try:
             new_sock = self._connect(self._reconnect_timeout)
-        except ConnectionError as exc:
+        except ConnectionLost as exc:
             _logger.warning(f"{self.name}: reconnect failed: {exc}")
             return False
         new_sock.settimeout(_READ_POLL_S)
@@ -568,7 +575,7 @@ class TinyClient:
         # Atomically block new call()s and drain anything already in
         # flight so a racing caller can't slip a future in after the
         # recv loop has been joined.
-        self._stop_running(ConnectionError(f"tinyros client {self.name!r} was closed"))
+        self._stop_running(ConnectionLost(f"tinyros client {self.name!r} was closed"))
 
         try:
             self._send_queue.put((_frame(_MSG_BYE, b""), None))
