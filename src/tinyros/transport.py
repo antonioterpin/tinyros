@@ -625,9 +625,11 @@ class TinyServer:
         extraction does not block subsequent frames on the same
         connection. Failure modes:
 
-        * Metadata pickle is corrupt: nothing to address a reply to, so
-          log and drop. The caller's future will eventually resolve
-          when the client notices the dead socket.
+        * Metadata pickle is corrupt: there is no ``req_id`` to address
+          a reply to, so we treat this as a protocol error and drop the
+          peer connection. The client's recv loop notices the EOF and
+          fails every pending future with ``ConnectionError``, which
+          beats letting the caller's future hang indefinitely.
         * Metadata parses but the shm block is missing or malformed:
           use the parsed ``req_id`` / ``cb_name`` to send an
           ``ok=False`` REPLY so the caller's future resolves instead
@@ -640,7 +642,11 @@ class TinyServer:
         try:
             req_id, cb_name, meta = _parse_call_large_meta(body)
         except Exception as exc:
-            _logger.error(f"{self.name}: failed to parse CALL_LARGE metadata: {exc}")
+            _logger.error(
+                f"{self.name}: corrupt CALL_LARGE metadata; "
+                f"dropping connection: {exc}"
+            )
+            self._drop_conn(conn)
             return
         try:
             arr = _materialize_call_large(meta)
