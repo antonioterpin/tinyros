@@ -73,6 +73,10 @@ _ACCEPT_POLL_S = 0.1
 _READ_POLL_S = 1.0
 _CONNECT_TIMEOUT_S = 10.0
 _RECONNECT_TIMEOUT_S = 2.0
+# How long the reader thread waits for an in-flight slot before re-checking
+# ``_running`` and looping. Short enough that close() is responsive; long
+# enough that we don't burn CPU spinning on a saturated pool.
+_INFLIGHT_ACQUIRE_POLL_S = 0.2
 
 _SENTINEL = object()
 
@@ -388,14 +392,23 @@ class TinyServer:
                 misbehaving peer cannot trigger an unbounded allocation.
             max_in_flight: Maximum number of calls in flight (running +
                 queued) before the reader thread blocks on new frames.
-                Backpressure propagates up through TCP to the client so
-                no call is dropped. ``None`` defaults to ``workers * 3``,
-                which leaves headroom over the thread pool without
-                letting the internal queue grow unboundedly.
+                During normal operation, backpressure propagates up
+                through TCP to the client so calls are not dropped just
+                because the worker pool is full. Calls may still be
+                dropped during or after :meth:`close` as shutdown
+                progresses. ``None`` defaults to ``workers * 3``, which
+                leaves headroom over the thread pool without letting
+                the internal queue grow unboundedly.
+
+        Raises:
+            ValueError: If ``workers`` is not at least 1, or if the
+                resolved ``max_in_flight`` is not at least 1.
         """
         self.name = name
         self.host = host
         self.port = port
+        if workers < 1:
+            raise ValueError(f"workers must be at least 1; got {workers}")
         self._max_frame_bytes = (
             max_frame_bytes
             if max_frame_bytes is not None
@@ -409,7 +422,6 @@ class TinyServer:
                 "max_in_flight must resolve to at least 1; "
                 f"got {effective_in_flight}"
             )
-        self._max_in_flight = effective_in_flight
         self._pool_semaphore = threading.BoundedSemaphore(effective_in_flight)
         self._callbacks: dict[str, Callable[..., Any]] = {}
         self._pool = concurrent.futures.ThreadPoolExecutor(
@@ -656,7 +668,7 @@ class TinyServer:
             *args: Arguments forwarded to ``fn``.
         """
         while self._running.is_set():
-            if self._pool_semaphore.acquire(timeout=0.2):
+            if self._pool_semaphore.acquire(timeout=_INFLIGHT_ACQUIRE_POLL_S):
                 break
         else:
             return

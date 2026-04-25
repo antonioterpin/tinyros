@@ -272,6 +272,11 @@ def test_server_bounded_inflight(free_port: int) -> None:
         for fut in futures:
             assert fut.result(timeout=5.0) == "ok"
     finally:
+        # Always release before close() so an assertion failure above
+        # does not leave callbacks blocked in release.wait(timeout=5),
+        # which would force server.close() to wait the full 5 s before
+        # the worker pool drains.
+        release.set()
         client.close(timeout=1.0)
         server.close(timeout=1.0)
         wait_port_free(free_port)
@@ -298,6 +303,30 @@ def test_server_max_in_flight_zero_is_rejected(free_port: int) -> None:
             host="127.0.0.1",
             port=free_port,
             max_in_flight=-1,
+        )
+
+
+def test_server_workers_zero_is_rejected(free_port: int) -> None:
+    """``workers < 1`` must fail with a workers-specific error message.
+
+    Without explicit validation, ``workers=0`` would propagate into
+    the ``workers * 3`` default for ``max_in_flight`` and raise an
+    error blaming the wrong knob. Validating ``workers`` first means
+    the error points at the actual misconfiguration.
+    """
+    with pytest.raises(ValueError, match="workers must be at least 1"):
+        TinyServer(
+            name="t-zero-workers",
+            host="127.0.0.1",
+            port=free_port,
+            workers=0,
+        )
+    with pytest.raises(ValueError, match="workers must be at least 1"):
+        TinyServer(
+            name="t-neg-workers",
+            host="127.0.0.1",
+            port=free_port,
+            workers=-2,
         )
 
 
