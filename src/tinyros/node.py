@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import atexit
 import concurrent.futures
+import ipaddress
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any
@@ -25,6 +26,38 @@ from ._logging import get_logger
 from .transport import TinyClient, TinyServer
 
 _logger = get_logger("tinyros.node", scope="tinyros.node")
+
+_LOOPBACK_HOST_ALIASES = frozenset({"localhost"})
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return True when ``host`` binds only to the loopback interface.
+
+    Args:
+        host: String passed to ``socket.bind`` in the current transport,
+            which supports IPv4 literals and hostname aliases.
+            ``0.0.0.0`` is treated as non-loopback (it binds every
+            interface); any address in ``127.0.0.0/8`` and ``localhost``
+            are loopback. IPv6 literals are not supported by the
+            transport and would fail at bind regardless.
+
+    Returns:
+        ``True`` if ``host`` is known to be loopback, ``False``
+        otherwise (including any custom hostname that cannot be
+        verified statically).
+    """
+    if host in _LOOPBACK_HOST_ALIASES:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address):
+        # Current transport binds AF_INET only; IPv6 literals can't be
+        # bound, so refuse to mark them loopback -- that would let a
+        # user think ``::1`` is usable when it isn't.
+        return False
+    return addr.is_loopback
 
 
 @dataclass(frozen=True)
@@ -165,15 +198,21 @@ class TinyNode:
         name: str,
         network_config: TinyNetworkConfig,
         *,
-        bind_host: str = "0.0.0.0",
+        bind_host: str = "127.0.0.1",
     ) -> None:
         """Initialize the node.
 
         Args:
             name: Node name; must appear in ``network_config.nodes``.
             network_config: Immutable topology describing the network.
-            bind_host: Local interface to bind the server on. Defaults to
-                all interfaces so remote nodes can reach us.
+            bind_host: Local interface to bind the server on. Defaults
+                to the loopback interface (``127.0.0.1``) because the
+                wire format deserializes with ``pickle.loads``, which
+                is equivalent to arbitrary code execution for anyone
+                who can open the port. Override with ``0.0.0.0`` or a
+                specific interface address when a non-loopback bind is
+                genuinely needed; a warning is logged in that case as
+                a reminder that no authentication exists between peers.
 
         Raises:
             ValueError: If ``name`` is not present in the config.
@@ -182,6 +221,15 @@ class TinyNode:
         self.network_config = network_config
         node_description = self.network_config.get_node_by_name(name)
         self.port = node_description.port
+
+        if not _is_loopback_host(bind_host):
+            _logger.warning(
+                f"{name}: binding to non-loopback host {bind_host!r}. "
+                f"TinyROS deserializes the wire with pickle.loads, so "
+                f"anyone who can connect to port {self.port} can "
+                f"execute arbitrary code in this process. Use only on "
+                f"a trusted network."
+            )
 
         self.server = TinyServer(
             name=f"{name}_{self.port}",
