@@ -20,6 +20,7 @@ Single source of truth for all TinyROS documentation. Start here.
 |---|---|
 | [contributing.md](guides/contributing.md) | Development setup, quality gates, PR preparation |
 | [agent-development.md](guides/agent-development.md) | Using TinyROS with Claude Code, Antigravity, and custom agents |
+| [troubleshooting.md](guides/troubleshooting.md) | Common operational failure modes (stuck nodes, leaked shm, port reuse) and how to fix them |
 
 ---
 
