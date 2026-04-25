@@ -1,8 +1,4 @@
-"""TinyROS server: accept connections, dispatch CALL frames to callbacks.
-
-See :doc:`docs/guides/architecture/tiny-objects` for the runtime model
-(lifecycle, worker pool + in-flight cap, CALL_LARGE failure handling).
-"""
+"""TinyROS server: accept connections, dispatch CALL frames to callbacks."""
 
 from __future__ import annotations
 

@@ -1,9 +1,4 @@
-"""TinyROS client: connect to a server, send CALL frames, demux REPLY frames.
-
-See :doc:`docs/guides/architecture/tiny-objects` for the runtime model
-(lifecycle, reconnect-on-send-failure choreography, shm bookkeeping
-across reconnect).
-"""
+"""TinyROS client: connect to a server, send CALL frames, demux REPLY frames."""
 
 from __future__ import annotations
 

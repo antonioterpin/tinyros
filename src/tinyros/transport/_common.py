@@ -1,10 +1,4 @@
-"""Shared constants, env helpers, and small data carriers for the transport.
-
-Imported by :mod:`tinyros.transport._framing`,
-:mod:`tinyros.transport._server`, and :mod:`tinyros.transport._client`. No
-public API: anything users need is re-exported from
-:mod:`tinyros.transport`.
-"""
+"""Shared constants, env helpers, and small data carriers for the transport."""
 
 from __future__ import annotations
 

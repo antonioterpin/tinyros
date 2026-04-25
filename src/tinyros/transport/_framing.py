@@ -1,8 +1,6 @@
 """Wire-format helpers: framing, OOB pickle, CALL_LARGE shm bridge.
 
-Pure functions used by both :mod:`tinyros.transport._server` and
-:mod:`tinyros.transport._client`. No socket lifecycle or threading
-primitives live here.
+Pure functions only -- no socket lifecycle or threading primitives.
 """
 
 from __future__ import annotations
