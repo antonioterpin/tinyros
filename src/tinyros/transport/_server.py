@@ -25,6 +25,7 @@ from ._common import (
     _logger,
     _PendingCall,
 )
+from ._errors import SerializationError
 from ._framing import (
     _frame,
     _materialize_call_large,
@@ -297,10 +298,21 @@ class TinyServer:
                     return
                 try:
                     self._handle_frame(conn, kind, body)
-                except Exception as exc:
-                    _logger.error(
-                        f"{self.name}: frame handler failed "
-                        f"(kind={kind}, peer_fd={conn.fileno()}): {exc}"
+                except SerializationError as exc:
+                    # Peer sent garbage we cannot decode. Drop the
+                    # connection but log at warning -- this is bad
+                    # input, not a server bug.
+                    _logger.warning(
+                        f"{self.name}: dropping peer (kind={kind}, "
+                        f"peer_fd={conn.fileno()}): {exc}"
+                    )
+                    return
+                except Exception:
+                    # Anything else is unexpected -- include the
+                    # traceback so the operator can find the bug.
+                    _logger.exception(
+                        f"{self.name}: frame handler crashed "
+                        f"(kind={kind}, peer_fd={conn.fileno()})"
                     )
                     return
         finally:
@@ -321,7 +333,13 @@ class TinyServer:
             body: Frame body bytes.
         """
         if kind == _MSG_CALL:
-            req_id, cb_name, arg = _unpack_oob(body)
+            try:
+                req_id, cb_name, arg = _unpack_oob(body)
+            except Exception as exc:
+                raise SerializationError(
+                    f"tinyros server {self.name!r}: failed to decode CALL "
+                    f"frame: {type(exc).__name__}: {exc}"
+                ) from exc
             pending = _PendingCall(conn, int(req_id), str(cb_name), arg)
             self._submit_call(self._execute_call, pending)
         elif kind == _MSG_CALL_LARGE:
@@ -350,13 +368,21 @@ class TinyServer:
         try:
             fut = self._pool.submit(fn, *args)
         except RuntimeError:
-            # Pool is shutting down (expected during close()); drop the
-            # slot and the call. Reader loop will notice _running fall
-            # and exit on its own without logging a spurious error.
+            # ThreadPoolExecutor.submit() raises RuntimeError exactly
+            # when the pool is shut down. Expected during close():
+            # drop the slot and the call; the reader loop will notice
+            # _running fall and exit on its own without logging a
+            # spurious error.
             self._pool_semaphore.release()
             return
         except Exception:
+            # Anything else from submit() is unexpected. Release the
+            # slot we just acquired and surface the traceback so an
+            # operator can find the bug; previously this re-raised
+            # silently and got conflated with deserialization failures
+            # at the reader loop's catch-site.
             self._pool_semaphore.release()
+            _logger.exception(f"{self.name}: unexpected error submitting work to pool")
             raise
         fut.add_done_callback(lambda _f: self._pool_semaphore.release())
 
