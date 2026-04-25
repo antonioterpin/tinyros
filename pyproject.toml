@@ -143,3 +143,10 @@ dev = [
     "build>=1.3.0",
     "twine>=6.2.0",
 ]
+
+# Bandit static security scan. Pickle deserialization (B301, B403) is
+# part of the documented transport design under a trusted-peer model,
+# so silencing it is intentional; everything else stays on.
+[tool.bandit]
+targets = ["src"]
+skips = ["B301", "B403"]
