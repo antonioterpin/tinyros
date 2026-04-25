@@ -21,13 +21,13 @@ import time
 import numpy as np
 import yaml
 
-from tinyros import TinyNetworkConfig, TinyNode
+from tinyros import TinyNetworkConfig, TinyNode, get_logger
 
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(name)s %(levelname)s %(message)s",
 )
-_logger = logging.getLogger("tinyros.example")
+_logger = get_logger("tinyros.example", scope="tinyros.example")
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "network_config.yaml")
 with open(_CONFIG_PATH) as _f:
