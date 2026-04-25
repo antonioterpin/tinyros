@@ -8,7 +8,12 @@ TinyROS is a minimal pub/sub runtime for robotics: static network config, peer-t
 src/tinyros/
     __init__.py         Public surface (re-exports below)
     node.py             TinyNode, TinyNetworkConfig, descriptors
-    transport.py        LocalTransport (server/client) -- the wire
+    transport/          The wire
+        __init__.py     Re-exports TinyServer / TinyClient
+        _common.py      Constants, env helpers, _PendingCall, _logger
+        _framing.py     Wire helpers: _recvall, _frame, OOB pickle, CALL_LARGE shm bridge
+        _server.py      TinyServer
+        _client.py      TinyClient (+ _ClientMethod proxy)
 tests/
     conftest.py         Marker-gated collection modifier
     test_*.py           Unit tests (mirror src/tinyros/*)
@@ -78,8 +83,11 @@ Anything not listed in `__all__` is considered internal.
 | Change | Module |
 |---|---|
 | Pub/sub semantics, callback binding, lifecycle | `src/tinyros/node.py` |
-| Wire protocol, framing, shm path | `src/tinyros/transport.py` |
+| Wire framing, OOB pickle, CALL_LARGE shm bridge | `src/tinyros/transport/_framing.py` |
+| Server lifecycle, dispatch, backpressure | `src/tinyros/transport/_server.py` |
+| Client lifecycle, send/recv loops, reconnect | `src/tinyros/transport/_client.py` |
+| Constants and env-var defaults | `src/tinyros/transport/_common.py` |
 | Network-config parsing | `src/tinyros/node.py` (`TinyNetworkConfig`) |
-| Public re-exports | `src/tinyros/__init__.py` |
+| Public re-exports | `src/tinyros/__init__.py`, `src/tinyros/transport/__init__.py` |
 
 Test location mirrors module location (see [testing standards](../../standards/testing.md)).
