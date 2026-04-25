@@ -2,15 +2,17 @@
 
 Verifies that _pack_oob / _unpack_oob round-trip faithfully for scalars,
 strings, and numpy arrays whose buffers travel out-of-band via pickle
-protocol 5.
+protocol 5, and that _recvall short-circuits a zero-byte read.
 """
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
 
-from tinyros.transport import _pack_oob, _unpack_oob
+from tinyros.transport import _pack_oob, _recvall, _unpack_oob
 
 
 @pytest.mark.parametrize(
@@ -58,6 +60,23 @@ def test_ndarray_roundtrip(shape: tuple[int, ...], dtype: type[np.generic]) -> N
     assert np.array_equal(
         decoded, arr
     ), "byte-identical payload expected after roundtrip"
+
+
+def test_recvall_zero_length_returns_empty_without_touching_socket() -> None:
+    """``_recvall`` with ``n == 0`` returns ``b""`` and never calls ``recv``.
+
+    The reader loops in ``transport.py`` rely on this short-circuit so a
+    framed message with an empty body decodes without a socket round-trip
+    and without consulting ``should_continue``.
+    """
+    sock = MagicMock()
+    should_continue = MagicMock(return_value=True)
+
+    result = _recvall(sock, 0, should_continue)
+
+    assert result == b"", f"expected b'' for n=0, got {result!r}"
+    sock.recv.assert_not_called()
+    should_continue.assert_not_called()
 
 
 def test_nested_ndarray_roundtrip() -> None:
