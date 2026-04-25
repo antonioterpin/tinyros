@@ -1,39 +1,23 @@
 """TinyROS transport: minimal RPC wire between nodes.
 
-Two public classes:
+Public surface:
 
-- :class:`TinyServer`: binds a TCP port, dispatches inbound RPC calls to
-  named callbacks registered via :meth:`TinyServer.bind`.
-- :class:`TinyClient`: connects to a :class:`TinyServer` and makes RPC
-  calls that return :class:`concurrent.futures.Future` objects.
+- :class:`TinyServer`: binds a TCP port and dispatches inbound RPC
+  calls to callbacks registered via :meth:`TinyServer.bind`.
+- :class:`TinyClient`: connects to a :class:`TinyServer` and returns
+  :class:`concurrent.futures.Future` objects from RPC calls.
 
-Wire protocol (framed with a 1-byte kind + 4-byte length header):
+The transport is single-host. Frames are length-prefixed; CALL bodies
+use pickle protocol 5 with out-of-band buffers; large top-level ndarray
+arguments take a shared-memory side-channel.
 
-- ``CALL``: inline pickle protocol 5 payload with out-of-band buffers.
-- ``CALL_LARGE``: metadata frame whose single ndarray payload travels
-  through :mod:`multiprocessing.shared_memory`, bypassing the socket.
-- ``REPLY``: pickled ``(req_id, ok, result_or_exception)``.
-- ``BYE``: graceful disconnect announcement.
+See:
 
-The shared-memory side-channel activates when the call argument is an
-ndarray whose ``nbytes`` is at least the configured threshold (default
-64 KiB, set via the ``TINYROS_SHM_THRESHOLD`` env var or the
-``shm_threshold`` constructor kwarg; ``0`` disables the fast path).
-Only **top-level** ndarrays trigger the fast path -- arrays nested
-inside a tuple, dict, or custom message class travel inline via
-pickle protocol 5 out-of-band buffers. Pass a bare ndarray as the call argument
-when you want cross-process delivery to skip the socket copy.
-
-Inline frames (CALL without the shm path and every REPLY) are capped at
-``TINYROS_MAX_FRAME_BYTES`` bytes (default 256 MiB) so a misbehaving
-peer cannot force an unbounded allocation by claiming a huge length in
-the header. Override per-instance via the ``max_frame_bytes`` kwarg on
-:class:`TinyServer` / :class:`TinyClient`.
-
-The whole transport assumes a single host.
-
-See ``docs/guides/architecture/transport.md`` for the rationale behind
-the design and the threading model.
+- ``docs/guides/architecture/transport.md`` -- wire protocol, framing,
+  shared-memory fast path, threading model.
+- ``docs/guides/architecture/tiny-objects.md`` -- runtime behavior:
+  state machines, backpressure, reconnect-on-send-failure, failure
+  modes, cross-process startup choreography.
 """
 
 from __future__ import annotations
@@ -72,6 +56,12 @@ _DEFAULT_MAX_FRAME_BYTES = 256 * 1024 * 1024
 _ACCEPT_POLL_S = 0.1
 _READ_POLL_S = 1.0
 _CONNECT_TIMEOUT_S = 10.0
+_RECONNECT_TIMEOUT_S = 2.0
+# How long the reader thread waits for an in-flight slot before re-checking
+# ``_running`` and looping. Short enough that close() is responsive; long
+# enough that we don't burn CPU spinning on a saturated pool.
+_INFLIGHT_ACQUIRE_POLL_S = 0.2
+_LISTEN_BACKLOG = 64
 
 _SENTINEL = object()
 
@@ -251,16 +241,35 @@ def _pack_call_large(
     return pickle.dumps(meta, protocol=5)
 
 
-def _unpack_call_large(body: bytes) -> tuple[int, str, np.ndarray]:
-    """Reconstruct a CALL_LARGE body and materialize the ndarray.
+def _parse_call_large_meta(body: bytes) -> tuple[int, str, dict[str, Any]]:
+    """Parse the metadata portion of a CALL_LARGE body.
+
+    Split out from :func:`_unpack_call_large` so the worker can surface
+    an ``ok=False`` reply when the shm block itself is missing or
+    malformed: by the time materialization fails we already know the
+    ``req_id`` and ``cb_name`` to address the reply to.
 
     Args:
         body: Pickled metadata produced by :func:`_pack_call_large`.
 
     Returns:
-        Triple ``(req_id, cb_name, ndarray)``.
+        Triple ``(req_id, cb_name, meta)``; ``meta`` is the full dict
+        (including ``shm_name``/``dtype``/``shape``) so callers can
+        continue into :func:`_materialize_call_large`.
     """
     meta = pickle.loads(body)
+    return int(meta["req_id"]), str(meta["cb_name"]), meta
+
+
+def _materialize_call_large(meta: dict[str, Any]) -> np.ndarray:
+    """Map the shm block named in ``meta`` and copy its contents out.
+
+    Args:
+        meta: The dict returned by :func:`_parse_call_large_meta`.
+
+    Returns:
+        A freshly-copied ndarray of the declared ``shape``/``dtype``.
+    """
     shm_name: str = meta["shm_name"]
     dtype = np.dtype(meta["dtype"])
     shape: tuple[int, ...] = tuple(meta["shape"])
@@ -271,7 +280,20 @@ def _unpack_call_large(body: bytes) -> tuple[int, str, np.ndarray]:
     finally:
         shm.close()
         _try_unlink_shm(shm_name)
-    return int(meta["req_id"]), str(meta["cb_name"]), arr
+    return arr
+
+
+def _unpack_call_large(body: bytes) -> tuple[int, str, np.ndarray]:
+    """Reconstruct a CALL_LARGE body and materialize the ndarray.
+
+    Args:
+        body: Pickled metadata produced by :func:`_pack_call_large`.
+
+    Returns:
+        Triple ``(req_id, cb_name, ndarray)``.
+    """
+    req_id, cb_name, meta = _parse_call_large_meta(body)
+    return req_id, cb_name, _materialize_call_large(meta)
 
 
 def _try_unlink_shm(name: str) -> None:
@@ -340,6 +362,7 @@ class TinyServer:
         *,
         workers: int = _DEFAULT_POOL_WORKERS,
         max_frame_bytes: int | None = None,
+        max_in_flight: int | None = None,
     ) -> None:
         """Initialize the server.
 
@@ -352,15 +375,37 @@ class TinyServer:
                 uses ``TINYROS_MAX_FRAME_BYTES`` or the 256 MiB default.
                 Frames claiming more are rejected without buffering so a
                 misbehaving peer cannot trigger an unbounded allocation.
+            max_in_flight: Maximum number of calls in flight (running +
+                queued) before the reader thread blocks on new frames.
+                ``None`` defaults to ``workers * 3``. See
+                ``docs/guides/architecture/tiny-objects.md`` ("Worker
+                pool and in-flight cap" / "Submit during shutdown") for
+                the backpressure model and the during-shutdown drop
+                semantics.
+
+        Raises:
+            ValueError: If ``workers`` is not at least 1, or if the
+                resolved ``max_in_flight`` is not at least 1.
         """
         self.name = name
         self.host = host
         self.port = port
+        if workers < 1:
+            raise ValueError(f"workers must be at least 1; got {workers}")
         self._max_frame_bytes = (
             max_frame_bytes
             if max_frame_bytes is not None
             else _default_max_frame_bytes()
         )
+        effective_in_flight = (
+            max_in_flight if max_in_flight is not None else workers * 3
+        )
+        if effective_in_flight < 1:
+            raise ValueError(
+                "max_in_flight must resolve to at least 1; "
+                f"got {effective_in_flight}"
+            )
+        self._pool_semaphore = threading.BoundedSemaphore(effective_in_flight)
         self._callbacks: dict[str, Callable[..., Any]] = {}
         self._pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=workers,
@@ -423,7 +468,7 @@ class TinyServer:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((self.host, self.port))
-        sock.listen(64)
+        sock.listen(_LISTEN_BACKLOG)
         sock.settimeout(_ACCEPT_POLL_S)
         self._server_sock = sock
 
@@ -440,8 +485,17 @@ class TinyServer:
     def close(self, timeout: float | None = 2.0) -> None:
         """Stop the server and release resources.
 
+        ``timeout`` gates the joins for the accept and reader threads.
+        The worker pool is drained with ``wait=True`` afterwards, so a
+        callback already running can extend ``close()`` past the
+        configured timeout; queued-but-not-yet-running callbacks are
+        cancelled via ``cancel_futures=True``. If you need a hard upper
+        bound, detach the server in a supervisor and reap the process
+        externally.
+
         Args:
-            timeout: Per-thread join timeout; ``None`` waits indefinitely.
+            timeout: Per-thread join timeout for the accept and reader
+                threads; ``None`` waits indefinitely.
         """
         with self._state_lock:
             if not self._running.is_set():
@@ -546,7 +600,9 @@ class TinyServer:
                         f"max {self._max_frame_bytes}); dropping connection"
                     )
                     return
-                body = _recvall(conn, length, self._running.is_set) if length else b""
+                # _recvall returns b"" for n=0 without touching the socket,
+                # so the length==0 path needs no special casing here.
+                body = _recvall(conn, length, self._running.is_set)
                 if body is None:
                     return
                 try:
@@ -563,6 +619,12 @@ class TinyServer:
     def _handle_frame(self, conn: socket.socket, kind: int, body: bytes) -> None:
         """Dispatch a decoded frame to the right handler path.
 
+        ``CALL_LARGE`` materialization (shm open, memcpy, unlink) is
+        pushed onto the worker pool so a large payload does not stall
+        the per-connection reader while it copies hundreds of MiB out
+        of shared memory -- the next frame on the same connection can
+        begin decoding immediately.
+
         Args:
             conn: Peer socket the frame arrived on.
             kind: Message kind from the frame header.
@@ -571,15 +633,129 @@ class TinyServer:
         if kind == _MSG_CALL:
             req_id, cb_name, arg = _unpack_oob(body)
             pending = _PendingCall(conn, int(req_id), str(cb_name), arg)
-            self._pool.submit(self._execute_call, pending)
+            self._submit_call(self._execute_call, pending)
         elif kind == _MSG_CALL_LARGE:
-            req_id, cb_name, arr = _unpack_call_large(body)
-            pending = _PendingCall(conn, req_id, cb_name, arr)
-            self._pool.submit(self._execute_call, pending)
+            self._submit_call(self._execute_large_call, conn, body)
         elif kind == _MSG_BYE:
             return
         else:
             _logger.warning(f"{self.name}: unknown frame kind {kind}")
+
+    def _submit_call(self, fn: Callable[..., Any], *args: Any) -> None:
+        """Submit a call to the worker pool with in-flight backpressure.
+
+        See ``docs/guides/architecture/tiny-objects.md`` ("Worker pool
+        and in-flight cap" / "Submit during shutdown") for the model.
+
+        Args:
+            fn: Worker method (:meth:`_execute_call` or
+                :meth:`_execute_large_call`).
+            *args: Arguments forwarded to ``fn``.
+        """
+        while self._running.is_set():
+            if self._pool_semaphore.acquire(timeout=_INFLIGHT_ACQUIRE_POLL_S):
+                break
+        else:
+            return
+        try:
+            fut = self._pool.submit(fn, *args)
+        except RuntimeError:
+            # Pool is shutting down (expected during close()); drop the
+            # slot and the call. Reader loop will notice _running fall
+            # and exit on its own without logging a spurious error.
+            self._pool_semaphore.release()
+            return
+        except Exception:
+            self._pool_semaphore.release()
+            raise
+        fut.add_done_callback(lambda _f: self._pool_semaphore.release())
+
+    def _execute_large_call(self, conn: socket.socket, body: bytes) -> None:
+        """Unpack a ``CALL_LARGE`` body and run the callback.
+
+        Runs on the worker pool, not the reader thread, so the shm
+        memcpy does not stall the connection. See
+        ``docs/guides/architecture/tiny-objects.md``
+        ("CALL_LARGE failure handling") for the parse-fail vs
+        materialize-fail behavior.
+
+        Args:
+            conn: Peer socket the frame arrived on.
+            body: Pickled metadata produced by :func:`_pack_call_large`.
+        """
+        try:
+            req_id, cb_name, meta = _parse_call_large_meta(body)
+        except Exception as exc:
+            _logger.error(
+                f"{self.name}: corrupt CALL_LARGE metadata; "
+                f"dropping connection: {exc}"
+            )
+            self._drop_conn(conn)
+            return
+        try:
+            arr = _materialize_call_large(meta)
+        except Exception as exc:
+            _logger.error(
+                f"{self.name}: failed to materialize CALL_LARGE "
+                f"(req_id={req_id}, cb={cb_name!r}): {exc}"
+            )
+            self._reply_failure(
+                conn,
+                req_id,
+                cb_name,
+                RuntimeError(
+                    f"tinyros server {self.name!r}: CALL_LARGE payload for "
+                    f"{cb_name!r} could not be read from shared memory: {exc}"
+                ),
+            )
+            return
+        self._execute_call(_PendingCall(conn, req_id, cb_name, arr))
+
+    def _reply_failure(
+        self,
+        conn: socket.socket,
+        req_id: int,
+        cb_name: str,
+        exc: BaseException,
+    ) -> None:
+        """Send a synthesized ``ok=False`` REPLY without running a callback.
+
+        Used when dispatch itself fails before the callback has a
+        chance to run (e.g., CALL_LARGE shm materialization errors).
+
+        Args:
+            conn: Peer socket the original frame arrived on.
+            req_id: Request id to address the reply to.
+            cb_name: Callback name -- only used for the log line.
+            exc: Exception to ship back as the failure cause.
+        """
+        try:
+            body = _pack_oob((req_id, False, exc))
+        except Exception as pickle_exc:
+            _logger.warning(
+                f"{self.name}: failure reply for {cb_name!r} is not "
+                f"picklable ({pickle_exc}); substituting RuntimeError"
+            )
+            body = _pack_oob(
+                (
+                    req_id,
+                    False,
+                    RuntimeError(
+                        f"tinyros server {self.name!r}: dispatch error "
+                        f"for {cb_name!r} is not serializable "
+                        f"({type(exc).__name__}: {pickle_exc})"
+                    ),
+                )
+            )
+        frame = _frame(_MSG_REPLY, body)
+        lock = self._conn_send_locks.get(conn)
+        if lock is None:
+            return
+        with lock:
+            try:
+                conn.sendall(frame)
+            except OSError:
+                return
 
     def _execute_call(self, call: _PendingCall) -> None:
         """Run the callback and send a REPLY frame.
@@ -700,6 +876,7 @@ class TinyClient:
         shm_threshold: int | None = None,
         max_frame_bytes: int | None = None,
         connect_timeout: float = _CONNECT_TIMEOUT_S,
+        reconnect_timeout: float = _RECONNECT_TIMEOUT_S,
     ) -> None:
         """Initialize the client and connect to the server.
 
@@ -716,7 +893,13 @@ class TinyClient:
                 Reply frames claiming more tear the client down instead of
                 buffering.
             connect_timeout: Max seconds to wait for the server to accept
-                the connection.
+                the initial connection.
+            reconnect_timeout: Max seconds to retry reconnecting after
+                a send failure before giving up. One reconnect attempt
+                per detected socket failure. See
+                ``docs/guides/architecture/tiny-objects.md``
+                ("Reconnect on send failure") for the full
+                choreography.
         """
         self.host = host
         self.port = port
@@ -729,6 +912,7 @@ class TinyClient:
             if max_frame_bytes is not None
             else _default_max_frame_bytes()
         )
+        self._reconnect_timeout = reconnect_timeout
         self._sock = self._connect(connect_timeout)
         self._sock.settimeout(_READ_POLL_S)
         self._send_queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
@@ -747,13 +931,8 @@ class TinyClient:
             daemon=True,
             name=f"tinyros-client-send-{name}",
         )
-        self._recv_thread = threading.Thread(
-            target=self._recv_loop,
-            daemon=True,
-            name=f"tinyros-client-recv-{name}",
-        )
         self._send_thread.start()
-        self._recv_thread.start()
+        self._recv_thread = self._start_recv_thread(self._sock)
 
     def _connect(self, timeout: float) -> socket.socket:
         """Connect to the server, retrying until ``timeout`` elapses.
@@ -827,6 +1006,15 @@ class TinyClient:
         with self._req_id_lock:
             req_id = self._next_req_id
             self._next_req_id += 1
+        try:
+            frame, shm_name = self._encode_call(req_id, method, arg)
+        except Exception as exc:
+            fut.set_exception(exc)
+            return fut
+        # Insert into _pending and put on _send_queue under one lock so
+        # the failure-handling block in _send_loop (which holds the same
+        # lock around fail-pending + drain-queue) cannot interleave and
+        # silently drop a frame whose future is still pending.
         with self._pending_lock:
             if not self._running.is_set():
                 fut.set_exception(
@@ -834,16 +1022,13 @@ class TinyClient:
                         f"tinyros client {self.name!r} is no longer running"
                     )
                 )
+                if shm_name is not None:
+                    with self._pending_shm_lock:
+                        self._pending_shm.discard(shm_name)
+                    _try_unlink_shm(shm_name)
                 return fut
             self._pending[req_id] = fut
-        try:
-            frame, shm_name = self._encode_call(req_id, method, arg)
-        except Exception as exc:
-            with self._pending_lock:
-                self._pending.pop(req_id, None)
-            fut.set_exception(exc)
-            return fut
-        self._send_queue.put((frame, shm_name))
+            self._send_queue.put((frame, shm_name))
         return fut
 
     def _encode_call(
@@ -888,7 +1073,17 @@ class TinyClient:
         return _frame(_MSG_CALL, body), None
 
     def _send_loop(self) -> None:
-        """Drain the outbound queue and push frames to the socket."""
+        """Drain the outbound queue and push frames to the socket.
+
+        On ``OSError`` the loop runs the reconnect-on-send-failure
+        choreography. See
+        ``docs/guides/architecture/tiny-objects.md``
+        ("Reconnect on send failure") for the step-by-step. ``_running``
+        is also consulted before reconnecting so a teardown initiated
+        by another path (e.g., ``_recv_loop``'s oversized-reply branch)
+        cannot be inadvertently revived by an OSError on the next
+        ``sendall``.
+        """
         while True:
             item = self._send_queue.get()
             if item is _SENTINEL:
@@ -897,23 +1092,98 @@ class TinyClient:
             try:
                 self._sock.sendall(frame)
             except OSError as exc:
-                _logger.warning(f"{self.name}: send failed ({exc}); tearing down")
-                self._fail_all_pending(
-                    ConnectionError(
-                        f"tinyros client {self.name!r}: send failed ({exc})"
-                    )
+                _logger.warning(f"{self.name}: send failed ({exc})")
+                exc_for_pending = ConnectionError(
+                    f"tinyros client {self.name!r}: send failed ({exc})"
                 )
-                self._shutdown_io()
-                return
+                # Hold _pending_lock across the snapshot + clear + drain
+                # so a concurrent ``call()`` (which takes the same lock
+                # around insert + put) cannot slip a frame past us:
+                # either its insert+put completes before us and is
+                # included in the failure, or it waits for the lock,
+                # observes the cleared state (post-_stop_running) or
+                # the new socket, and behaves correctly.
+                with self._pending_lock:
+                    pending_snapshot = dict(self._pending)
+                    self._pending.clear()
+                    # Server never consumed the failing frame, so unlink
+                    # its shm block before draining further queued frames.
+                    self._unlink_orphan_shm(shm_name)
+                    self._drain_queued_sends()
+                for fut in pending_snapshot.values():
+                    if not fut.done():
+                        fut.set_exception(exc_for_pending)
+                if (
+                    self._shutdown_called
+                    or not self._running.is_set()
+                    or not self._try_reconnect()
+                ):
+                    self._stop_running(exc_for_pending)
+                    self._shutdown_io()
+                    return
+                continue
             else:
                 if shm_name is not None:
+                    # Server is responsible for unlinking on success;
+                    # just release our tracking entry.
                     with self._pending_shm_lock:
                         self._pending_shm.discard(shm_name)
 
-    def _recv_loop(self) -> None:
-        """Read REPLY frames and complete the matching futures."""
+    def _unlink_orphan_shm(self, shm_name: str | None) -> None:
+        """Release a shm block the server will never consume.
+
+        Used on the send-failure path where the receiving server never
+        got the CALL_LARGE frame (or the frame was dropped before being
+        delivered), so the unlink responsibility falls back on the
+        client. No-op for inline frames.
+
+        Args:
+            shm_name: Name of the shm block to release; ``None`` for
+                inline frames.
+        """
+        if shm_name is None:
+            return
+        with self._pending_shm_lock:
+            if shm_name not in self._pending_shm:
+                return
+            self._pending_shm.discard(shm_name)
+        _try_unlink_shm(shm_name)
+
+    def _drain_queued_sends(self) -> None:
+        """Drop every frame still queued behind a failed send.
+
+        Their futures have already been failed by ``_fail_all_pending``;
+        re-sending them on a reconnected socket would only produce
+        server-side side effects and orphan REPLY frames. Sentinels are
+        put back so ``close()`` can still terminate the loop.
+        """
+        requeue_sentinel = False
         while True:
-            header = _recvall(self._sock, _HEADER_SIZE, self._running.is_set)
+            try:
+                item = self._send_queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is _SENTINEL:
+                requeue_sentinel = True
+                continue
+            _frame, shm_name = item
+            self._unlink_orphan_shm(shm_name)
+        if requeue_sentinel:
+            self._send_queue.put(_SENTINEL)
+
+    def _recv_loop(self, sock: socket.socket) -> None:
+        """Read REPLY frames from ``sock`` and complete matching futures.
+
+        Bound to a specific socket so a reconnect can spawn a fresh
+        recv thread on the new socket without racing the old one.
+        Does not clear ``_running`` -- the client stays reusable for
+        the next send, which may trigger a reconnect attempt.
+
+        Args:
+            sock: The connected socket this loop reads from.
+        """
+        while True:
+            header = _recvall(sock, _HEADER_SIZE, self._running.is_set)
             if header is None:
                 if self._running.is_set():
                     self._fail_all_pending(
@@ -929,7 +1199,7 @@ class TinyClient:
                     f"{self.name}: oversized reply frame ({length} bytes, "
                     f"max {self._max_frame_bytes}); tearing down"
                 )
-                self._fail_all_pending(
+                self._stop_running(
                     ConnectionError(
                         f"tinyros client {self.name!r}: oversized reply "
                         f"({length} bytes)"
@@ -937,7 +1207,7 @@ class TinyClient:
                 )
                 self._shutdown_io()
                 return
-            body = _recvall(self._sock, length, self._running.is_set) if length else b""
+            body = _recvall(sock, length, self._running.is_set)
             if body is None:
                 if self._running.is_set():
                     self._fail_all_pending(
@@ -945,6 +1215,10 @@ class TinyClient:
                     )
                 return
             if kind != _MSG_REPLY:
+                _logger.warning(
+                    f"{self.name}: unexpected non-reply frame kind "
+                    f"{kind} on the client socket; ignoring"
+                )
                 continue
             try:
                 req_id, ok, result = _unpack_oob(body)
@@ -967,8 +1241,35 @@ class TinyClient:
     def _fail_all_pending(self, exc: BaseException) -> None:
         """Resolve every outstanding future with an exception.
 
+        Does not change the client's running state; callers intending
+        a full teardown must clear ``_running`` via :meth:`_stop_running`
+        so a ``call()`` racing with teardown sees the cleared flag
+        under ``_pending_lock`` instead of orphaning a future. Leaving
+        ``_running`` alone means a transient socket failure can still
+        be recovered by :meth:`_try_reconnect`.
+
         Args:
             exc: Exception to set on each pending future.
+        """
+        with self._pending_lock:
+            pending = dict(self._pending)
+            self._pending.clear()
+        for fut in pending.values():
+            if not fut.done():
+                fut.set_exception(exc)
+
+    def _stop_running(self, exc: BaseException) -> None:
+        """Clear ``_running`` atomically with draining ``_pending``.
+
+        Used on permanent-teardown paths (close, reconnect-failed,
+        oversized reply). ``call()`` re-checks ``_running`` under
+        ``_pending_lock`` before inserting, so clearing the flag here
+        -- while the lock is held around the final drain -- is what
+        keeps a racing caller from leaving an orphan future behind.
+
+        Args:
+            exc: Exception to set on each pending future drained by
+                this call.
         """
         with self._pending_lock:
             self._running.clear()
@@ -977,6 +1278,48 @@ class TinyClient:
         for fut in pending.values():
             if not fut.done():
                 fut.set_exception(exc)
+
+    def _try_reconnect(self) -> bool:
+        """Replace the dead socket with a fresh connection.
+
+        See ``docs/guides/architecture/tiny-objects.md``
+        ("Reconnect on send failure") for the choreography.
+
+        Returns:
+            ``True`` if the new socket is live and a new recv thread
+            is running; ``False`` if the reconnect budget expired.
+        """
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        if self._recv_thread.is_alive():
+            self._recv_thread.join(timeout=1.0)
+        try:
+            new_sock = self._connect(self._reconnect_timeout)
+        except ConnectionError as exc:
+            _logger.warning(f"{self.name}: reconnect failed: {exc}")
+            return False
+        new_sock.settimeout(_READ_POLL_S)
+        self._sock = new_sock
+        self._recv_thread = self._start_recv_thread(new_sock)
+        _logger.info(f"{self.name}: reconnected to {self.host}:{self.port}")
+        return True
+
+    def _start_recv_thread(self, sock: socket.socket) -> threading.Thread:
+        """Spawn a recv thread bound to ``sock``. Returns the started thread."""
+        t = threading.Thread(
+            target=self._recv_loop,
+            args=(sock,),
+            daemon=True,
+            name=f"tinyros-client-recv-{self.name}",
+        )
+        t.start()
+        return t
 
     def _shutdown_io(self) -> None:
         """Release the socket and wake the send loop without joining threads.
@@ -1010,7 +1353,11 @@ class TinyClient:
             if self._shutdown_called:
                 return
             self._shutdown_called = True
-            self._running.clear()
+
+        # Atomically block new call()s and drain anything already in
+        # flight so a racing caller can't slip a future in after the
+        # recv loop has been joined.
+        self._stop_running(ConnectionError(f"tinyros client {self.name!r} was closed"))
 
         try:
             self._send_queue.put((_frame(_MSG_BYE, b""), None))
@@ -1036,7 +1383,3 @@ class TinyClient:
             self._pending_shm.clear()
         for n in stragglers:
             _try_unlink_shm(n)
-
-        self._fail_all_pending(
-            ConnectionError(f"tinyros client {self.name!r} was closed")
-        )

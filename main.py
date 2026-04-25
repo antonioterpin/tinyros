@@ -227,12 +227,34 @@ def main() -> None:
         except KeyboardInterrupt:
             _logger.info("shutting down all processes")
     finally:
+        # Ask nicely first: ``terminate()`` requests a graceful exit
+        # (POSIX: SIGTERM; Windows: TerminateProcess). On a terminal
+        # Ctrl+C also propagates the interrupt signal to the whole
+        # process group on POSIX, so most nodes exit gracefully by
+        # that path alone before this loop runs.
         for p in procs:
             if p.is_alive():
                 p.terminate()
         for p in procs:
-            p.join(timeout=5.0)
-        _logger.info("all processes stopped")
+            p.join(timeout=3.0)
+        # Escalate for any children that ignored the graceful request.
+        stragglers = [p for p in procs if p.is_alive()]
+        for p in stragglers:
+            _logger.warning(f"process {p.name} did not exit; killing")
+            p.kill()
+        for p in stragglers:
+            p.join(timeout=2.0)
+        # A child stuck in an uninterruptible kernel call (D-state) can
+        # survive ``kill()``; reflect that in the log so the operator
+        # knows the parent is leaving non-daemon children behind.
+        survivors = [p for p in procs if p.is_alive()]
+        if survivors:
+            _logger.error(
+                f"failed to stop {len(survivors)} process(es): "
+                f"{[p.name for p in survivors]}"
+            )
+        else:
+            _logger.info("all processes stopped")
 
 
 if __name__ == "__main__":

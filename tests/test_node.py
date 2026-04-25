@@ -414,6 +414,89 @@ def test_publish_returns_failed_future_for_closed_client(
             wait_port_free(p)
 
 
+def test_cyclic_topology_starts_without_deadlock(
+    three_free_ports: list[int],
+) -> None:
+    """Two nodes that publish to each other must come up concurrently.
+
+    With the original startup order (open outbound clients, *then*
+    bind + listen) two nodes that mutually publish would both block in
+    ``TinyClient.__init__`` -- each waiting on a peer whose listen
+    socket is gated by the same blocked init. The race usually shows
+    up as a 10 s connect-timeout failure on both sides; here we cap
+    the wait at 3 s so a regression fails loudly.
+
+    The fix re-orders ``TinyNode.__init__`` so the listen socket comes
+    up before any outbound dialing. Both nodes' ``__init__`` calls
+    must complete inside a few hundred milliseconds.
+    """
+    port_x, port_y, _ = three_free_ports
+    cfg = TinyNetworkConfig(
+        nodes={
+            "X": TinyNodeDescription(host="127.0.0.1", port=port_x),
+            "Y": TinyNodeDescription(host="127.0.0.1", port=port_y),
+        },
+        connections={
+            "X": {"x_to_y": (TinySubscription(actor="Y", cb_name="on_x"),)},
+            "Y": {"y_to_x": (TinySubscription(actor="X", cb_name="on_y"),)},
+        },
+    )
+
+    class _Pair(TinyNode):
+        def on_x(self, _msg: object) -> None: ...
+        def on_y(self, _msg: object) -> None: ...
+
+    # Lock around writes from the two spawn threads. CPython's GIL
+    # makes single-key dict assignment atomic, but adding a lock keeps
+    # the test resilient if the scheduling pattern ever changes (and
+    # makes the intent obvious).
+    state_lock = threading.Lock()
+    nodes: dict[str, _Pair] = {}
+    errors: list[BaseException] = []
+
+    def _spawn(name: str) -> None:
+        try:
+            built = _Pair(name, cfg)
+        except BaseException as exc:  # noqa: BLE001
+            with state_lock:
+                errors.append(exc)
+            return
+        with state_lock:
+            nodes[name] = built
+
+    tx = threading.Thread(target=_spawn, args=("X",), name="spawn-X")
+    ty = threading.Thread(target=_spawn, args=("Y",), name="spawn-Y")
+    tx.start()
+    ty.start()
+    tx.join(timeout=3.0)
+    ty.join(timeout=3.0)
+    threads_finished = not tx.is_alive() and not ty.is_alive()
+
+    try:
+        assert threads_finished, (
+            "TinyNode init deadlocked under a cyclic topology; "
+            f"X alive={tx.is_alive()} Y alive={ty.is_alive()}"
+        )
+        with state_lock:
+            assert not errors, f"unexpected init errors: {errors!r}"
+            built_names = set(nodes)
+        assert built_names == {
+            "X",
+            "Y",
+        }, f"both nodes should be built; got {built_names}"
+    finally:
+        with state_lock:
+            built = list(nodes.values())
+        for n in built:
+            n.shutdown()
+        # Skip wait_port_free if the spawn threads are still alive: the
+        # ports are still bound by the deadlocked init, and waiting for
+        # them to free turns an assertion failure into a hang.
+        if threads_finished:
+            for p in (port_x, port_y):
+                wait_port_free(p)
+
+
 def test_context_manager_shuts_down_on_exit(
     three_free_ports: list[int],
 ) -> None:
