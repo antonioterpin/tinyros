@@ -70,6 +70,23 @@ auxiliary state lives on the subscriber's own attributes. Walking the
 argument graph to hoist nested ndarrays into shm is a plausible
 future change but is not implemented today.
 
+### Views and non-contiguous arrays
+
+Numpy *views* (slices, transposes, reshapes that share memory with a
+base array) are themselves ndarrays, so they enter the fast path under
+the same rule as a freshly allocated array. The threshold is evaluated
+against `view.nbytes` -- the *logical* extent (`prod(shape) * itemsize`),
+not the underlying base buffer's size. A small slice of a multi-GiB
+array therefore stays inline; a large strided view of the same array
+travels via shm on its own merits.
+
+Whatever the source's contiguity, the encoder writes a fresh
+C-contiguous copy of the view's logical extent into the shm block (via
+`target[...] = view`), and the receiver materializes a fresh contiguous
+ndarray of the same shape, dtype, and values. View semantics -- sharing
+memory with the base on the sender -- do not, and cannot, survive
+cross-process delivery; the receiver always owns its own buffer.
+
 ## Endpoint abstraction
 
 The transport uses TCP stream sockets (`AF_INET` / `SOCK_STREAM`). Each
