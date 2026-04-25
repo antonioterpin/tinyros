@@ -278,14 +278,23 @@ def test_cyclic_topology_starts_without_deadlock(
         def on_x(self, _msg: object) -> None: ...
         def on_y(self, _msg: object) -> None: ...
 
+    # Lock around writes from the two spawn threads. CPython's GIL
+    # makes single-key dict assignment atomic, but adding a lock keeps
+    # the test resilient if the scheduling pattern ever changes (and
+    # makes the intent obvious).
+    state_lock = threading.Lock()
     nodes: dict[str, _Pair] = {}
     errors: list[BaseException] = []
 
     def _spawn(name: str) -> None:
         try:
-            nodes[name] = _Pair(name, cfg)
+            built = _Pair(name, cfg)
         except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
+            with state_lock:
+                errors.append(exc)
+            return
+        with state_lock:
+            nodes[name] = built
 
     tx = threading.Thread(target=_spawn, args=("X",), name="spawn-X")
     ty = threading.Thread(target=_spawn, args=("Y",), name="spawn-Y")
@@ -293,19 +302,31 @@ def test_cyclic_topology_starts_without_deadlock(
     ty.start()
     tx.join(timeout=3.0)
     ty.join(timeout=3.0)
+    threads_finished = not tx.is_alive() and not ty.is_alive()
 
     try:
-        assert not tx.is_alive() and not ty.is_alive(), (
+        assert threads_finished, (
             "TinyNode init deadlocked under a cyclic topology; "
             f"X alive={tx.is_alive()} Y alive={ty.is_alive()}"
         )
-        assert not errors, f"unexpected init errors: {errors!r}"
-        assert set(nodes) == {"X", "Y"}, f"both nodes should be built; got {set(nodes)}"
+        with state_lock:
+            assert not errors, f"unexpected init errors: {errors!r}"
+            built_names = set(nodes)
+        assert built_names == {
+            "X",
+            "Y",
+        }, f"both nodes should be built; got {built_names}"
     finally:
-        for n in nodes.values():
+        with state_lock:
+            built = list(nodes.values())
+        for n in built:
             n.shutdown()
-        for p in (port_x, port_y):
-            wait_port_free(p)
+        # Skip wait_port_free if the spawn threads are still alive: the
+        # ports are still bound by the deadlocked init, and waiting for
+        # them to free turns an assertion failure into a hang.
+        if threads_finished:
+            for p in (port_x, port_y):
+                wait_port_free(p)
 
 
 def test_context_manager_shuts_down_on_exit(
