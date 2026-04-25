@@ -266,6 +266,100 @@ def test_shutdown_releases_blocked_reader(free_port: int) -> None:
         wait_port_free(free_port)
 
 
+def test_server_conn_bookkeeping_shrinks_after_disconnect(
+    free_port: int,
+) -> None:
+    """Each connection's bookkeeping is removed when the client leaves.
+
+    Previously ``_reader_threads`` was an append-only list and the
+    other maps were keyed by ``id(conn)``; a server that saw many
+    connect/disconnect cycles kept a ``Thread`` object per historical
+    connection forever. Now every structure shrinks back to empty.
+    """
+    server = TinyServer(name="t-leak", host="127.0.0.1", port=free_port)
+    server.bind("noop", lambda _x: None)
+    server.start(block=False)
+    cycles = 30
+    try:
+        for i in range(cycles):
+            client = TinyClient(host="127.0.0.1", port=free_port, name=f"c-{i}")
+            client.call("noop", i).result(timeout=2.0)
+            client.close(timeout=1.0)
+        # _drop_conn runs on the reader thread once the client closes
+        # its side -- give it a moment to prune.
+        deadline = time.monotonic() + 2.0
+        while (
+            len(server._reader_threads) > 0  # noqa: SLF001
+            or len(server._conns) > 0  # noqa: SLF001
+            or len(server._conn_send_locks) > 0  # noqa: SLF001
+        ) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(server._reader_threads) == 0, (  # noqa: SLF001
+            f"reader thread map should be empty after {cycles} "
+            f"disconnects; got {len(server._reader_threads)}"  # noqa: SLF001
+        )
+        assert (
+            len(server._conns) == 0
+        ), (  # noqa: SLF001
+            f"conn set should be empty; got {len(server._conns)}"  # noqa: SLF001
+        )
+        assert len(server._conn_send_locks) == 0, (  # noqa: SLF001
+            f"send-lock map should be empty; "
+            f"got {len(server._conn_send_locks)}"  # noqa: SLF001
+        )
+    finally:
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
+def test_close_joins_readers_accepted_concurrently(free_port: int) -> None:
+    """close() must not leak a reader thread racing with a late accept.
+
+    The earlier version snapshotted ``_reader_threads`` before joining
+    ``_accept_thread``. If a client connected between the snapshot and
+    the accept loop actually exiting, its reader would be registered
+    after the snapshot and never joined -- leaking the thread and the
+    connection bookkeeping. Drive many concurrent connects during
+    ``close()`` and assert everything is drained.
+    """
+    server = TinyServer(name="t-race-close", host="127.0.0.1", port=free_port)
+    server.bind("noop", lambda _x: None)
+    server.start(block=False)
+    stop = threading.Event()
+
+    def hammer() -> None:
+        while not stop.is_set():
+            try:
+                c = TinyClient(
+                    host="127.0.0.1", port=free_port, name="hammer", connect_timeout=0.5
+                )
+            except OSError:
+                return
+            try:
+                c.close(timeout=0.5)
+            except OSError:
+                pass
+
+    hammers = [threading.Thread(target=hammer, daemon=True) for _ in range(4)]
+    for t in hammers:
+        t.start()
+    try:
+        time.sleep(0.1)
+    finally:
+        stop.set()
+        server.close(timeout=2.0)
+        for t in hammers:
+            t.join(timeout=2.0)
+        wait_port_free(free_port)
+    assert len(server._reader_threads) == 0, (  # noqa: SLF001
+        "close() should have joined and removed every reader thread, "
+        f"got {len(server._reader_threads)}"  # noqa: SLF001
+    )
+    assert (
+        len(server._conns) == 0
+    ), f"close() should have drained _conns, got {len(server._conns)}"  # noqa: SLF001
+
+
 def test_oversized_frame_header_drops_connection(free_port: int) -> None:
     """A peer claiming an absurd frame length is disconnected, not buffered.
 
