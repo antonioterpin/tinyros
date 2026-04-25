@@ -1,39 +1,23 @@
 """TinyROS transport: minimal RPC wire between nodes.
 
-Two public classes:
+Public surface:
 
-- :class:`TinyServer`: binds a TCP port, dispatches inbound RPC calls to
-  named callbacks registered via :meth:`TinyServer.bind`.
-- :class:`TinyClient`: connects to a :class:`TinyServer` and makes RPC
-  calls that return :class:`concurrent.futures.Future` objects.
+- :class:`TinyServer`: binds a TCP port and dispatches inbound RPC
+  calls to callbacks registered via :meth:`TinyServer.bind`.
+- :class:`TinyClient`: connects to a :class:`TinyServer` and returns
+  :class:`concurrent.futures.Future` objects from RPC calls.
 
-Wire protocol (framed with a 1-byte kind + 4-byte length header):
+The transport is single-host. Frames are length-prefixed; CALL bodies
+use pickle protocol 5 with out-of-band buffers; large top-level ndarray
+arguments take a shared-memory side-channel.
 
-- ``CALL``: inline pickle protocol 5 payload with out-of-band buffers.
-- ``CALL_LARGE``: metadata frame whose single ndarray payload travels
-  through :mod:`multiprocessing.shared_memory`, bypassing the socket.
-- ``REPLY``: pickled ``(req_id, ok, result_or_exception)``.
-- ``BYE``: graceful disconnect announcement.
+See:
 
-The shared-memory side-channel activates when the call argument is an
-ndarray whose ``nbytes`` is at least the configured threshold (default
-64 KiB, set via the ``TINYROS_SHM_THRESHOLD`` env var or the
-``shm_threshold`` constructor kwarg; ``0`` disables the fast path).
-Only **top-level** ndarrays trigger the fast path -- arrays nested
-inside a tuple, dict, or custom message class travel inline via
-pickle protocol 5 out-of-band buffers. Pass a bare ndarray as the call argument
-when you want cross-process delivery to skip the socket copy.
-
-Inline frames (CALL without the shm path and every REPLY) are capped at
-``TINYROS_MAX_FRAME_BYTES`` bytes (default 256 MiB) so a misbehaving
-peer cannot force an unbounded allocation by claiming a huge length in
-the header. Override per-instance via the ``max_frame_bytes`` kwarg on
-:class:`TinyServer` / :class:`TinyClient`.
-
-The whole transport assumes a single host.
-
-See ``docs/guides/architecture/transport.md`` for the rationale behind
-the design and the threading model.
+- ``docs/guides/architecture/transport.md`` -- wire protocol, framing,
+  shared-memory fast path, threading model.
+- ``docs/guides/architecture/tiny-objects.md`` -- runtime behavior:
+  state machines, backpressure, reconnect-on-send-failure, failure
+  modes, cross-process startup choreography.
 """
 
 from __future__ import annotations
@@ -393,13 +377,11 @@ class TinyServer:
                 misbehaving peer cannot trigger an unbounded allocation.
             max_in_flight: Maximum number of calls in flight (running +
                 queued) before the reader thread blocks on new frames.
-                During normal operation, backpressure propagates up
-                through TCP to the client so calls are not dropped just
-                because the worker pool is full. Calls may still be
-                dropped during or after :meth:`close` as shutdown
-                progresses. ``None`` defaults to ``workers * 3``, which
-                leaves headroom over the thread pool without letting
-                the internal queue grow unboundedly.
+                ``None`` defaults to ``workers * 3``. See
+                ``docs/guides/architecture/tiny-objects.md`` ("Worker
+                pool and in-flight cap" / "Submit during shutdown") for
+                the backpressure model and the during-shutdown drop
+                semantics.
 
         Raises:
             ValueError: If ``workers`` is not at least 1, or if the
@@ -662,17 +644,8 @@ class TinyServer:
     def _submit_call(self, fn: Callable[..., Any], *args: Any) -> None:
         """Submit a call to the worker pool with in-flight backpressure.
 
-        Acquires a semaphore slot first; if the pool is saturated the
-        reader thread blocks here until a worker finishes, which stalls
-        recv on this connection and lets TCP flow control push the
-        queue growth back to the client. The done-callback releases the
-        slot when the call completes.
-
-        If the pool is already shutting down (``ThreadPoolExecutor.submit``
-        raises ``RuntimeError``), release the slot and return quietly
-        rather than tearing down the connection -- this is the expected
-        state during :meth:`close` and should not be reported as a
-        protocol-level failure.
+        See ``docs/guides/architecture/tiny-objects.md`` ("Worker pool
+        and in-flight cap" / "Submit during shutdown") for the model.
 
         Args:
             fn: Worker method (:meth:`_execute_call` or
@@ -700,19 +673,11 @@ class TinyServer:
     def _execute_large_call(self, conn: socket.socket, body: bytes) -> None:
         """Unpack a ``CALL_LARGE`` body and run the callback.
 
-        Runs on the worker pool rather than the reader thread so shm
-        extraction does not block subsequent frames on the same
-        connection. Failure modes:
-
-        * Metadata pickle is corrupt: there is no ``req_id`` to address
-          a reply to, so we treat this as a protocol error and drop the
-          peer connection. The client's recv loop notices the EOF and
-          fails every pending future with ``ConnectionError``, which
-          beats letting the caller's future hang indefinitely.
-        * Metadata parses but the shm block is missing or malformed:
-          use the parsed ``req_id`` / ``cb_name`` to send an
-          ``ok=False`` REPLY so the caller's future resolves instead
-          of hanging forever.
+        Runs on the worker pool, not the reader thread, so the shm
+        memcpy does not stall the connection. See
+        ``docs/guides/architecture/tiny-objects.md``
+        ("CALL_LARGE failure handling") for the parse-fail vs
+        materialize-fail behavior.
 
         Args:
             conn: Peer socket the frame arrived on.
@@ -930,10 +895,11 @@ class TinyClient:
             connect_timeout: Max seconds to wait for the server to accept
                 the initial connection.
             reconnect_timeout: Max seconds to retry reconnecting after
-                a send failure before giving up and tearing the client
-                down. The send loop attempts one reconnect per detected
-                socket failure; callers who want long-running resilience
-                can retry across client lifetimes.
+                a send failure before giving up. One reconnect attempt
+                per detected socket failure. See
+                ``docs/guides/architecture/tiny-objects.md``
+                ("Reconnect on send failure") for the full
+                choreography.
         """
         self.host = host
         self.port = port
@@ -1109,20 +1075,14 @@ class TinyClient:
     def _send_loop(self) -> None:
         """Drain the outbound queue and push frames to the socket.
 
-        On ``OSError`` the loop fails every pending future (the current
-        frame included -- there is no safe way to know whether the
-        server started processing it), discards any frames that were
-        queued before the failure (their futures are already failed, so
-        transmitting them on a reconnected socket would be a stale
-        side-effect), and attempts a single best-effort reconnect. If
-        the reconnect succeeds the loop resumes on the new socket;
-        callers who need the failed frame re-delivered must re-issue
-        it. If the reconnect fails the client is torn down permanently.
-
-        ``_running`` is consulted before reconnecting: if another path
-        (notably ``_recv_loop``'s oversized-reply teardown) cleared the
-        flag while a frame was in flight, the OSError that follows on
-        the next ``sendall`` must not revive the client.
+        On ``OSError`` the loop runs the reconnect-on-send-failure
+        choreography. See
+        ``docs/guides/architecture/tiny-objects.md``
+        ("Reconnect on send failure") for the step-by-step. ``_running``
+        is also consulted before reconnecting so a teardown initiated
+        by another path (e.g., ``_recv_loop``'s oversized-reply branch)
+        cannot be inadvertently revived by an OSError on the next
+        ``sendall``.
         """
         while True:
             item = self._send_queue.get()
@@ -1322,10 +1282,8 @@ class TinyClient:
     def _try_reconnect(self) -> bool:
         """Replace the dead socket with a fresh connection.
 
-        Closes the old socket (waking the old recv thread), waits
-        briefly for the old recv to exit, then calls :meth:`_connect`
-        with the reconnect timeout. On success swaps in the new
-        socket and spawns a fresh recv thread bound to it.
+        See ``docs/guides/architecture/tiny-objects.md``
+        ("Reconnect on send failure") for the choreography.
 
         Returns:
             ``True`` if the new socket is live and a new recv thread
