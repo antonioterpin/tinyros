@@ -227,17 +227,17 @@ def main() -> None:
         except KeyboardInterrupt:
             _logger.info("shutting down all processes")
     finally:
-        # Ask nicely first: SIGTERM gives each child a chance to exit
-        # cleanly (atexit runs only if the child installs a handler,
-        # but Ctrl+C at the terminal also propagates SIGINT to the
-        # whole process group -- most nodes exit gracefully by that
-        # path alone).
+        # Ask nicely first: ``terminate()`` requests a graceful exit
+        # (POSIX: SIGTERM; Windows: TerminateProcess). On a terminal
+        # Ctrl+C also propagates the interrupt signal to the whole
+        # process group on POSIX, so most nodes exit gracefully by
+        # that path alone before this loop runs.
         for p in procs:
             if p.is_alive():
                 p.terminate()
         for p in procs:
             p.join(timeout=3.0)
-        # Escalate for any children that ignored SIGTERM.
+        # Escalate for any children that ignored the graceful request.
         stragglers = [p for p in procs if p.is_alive()]
         for p in stragglers:
             _logger.warning(f"process {p.name} did not exit; killing")
