@@ -11,7 +11,7 @@ A minimal implementation of an operating system for robots, to ease the integrat
 
 ## 🏛️ Design Philosophy
 
-🪶 **Single-file solution**: `TinyROS` ships its own minimal transport — an RPC-style pub/sub wire on top of `AF_UNIX` (TCP loopback on Windows) with a `multiprocessing.shared_memory` side-channel for large ndarray payloads. It works under the assumption that in most robotic systems, communication is primarily peer-to-peer or involves only a few subscribers per publisher (in [ROS](https://docs.ros.org/) terminology). This targeted approach lets us strip complexity down significantly: we deliberately avoid the entire ROS ecosystem baggage while providing the familiar publisher-subscriber pattern for the 90% of use cases that don't need the full complexity of ROS2.
+🪶 **Minimal, vendored transport**: `TinyROS` ships its own RPC-style pub/sub wire on top of plain TCP loopback (`AF_INET` + `SOCK_STREAM`) with a `multiprocessing.shared_memory` side-channel for large ndarray payloads. The same TCP path runs on every supported platform, so there is no OS-conditional code to reason about. It works under the assumption that in most robotic systems, communication is primarily peer-to-peer or involves only a few subscribers per publisher (in [ROS](https://docs.ros.org/) terminology). This targeted approach lets us strip complexity down significantly: we deliberately avoid the entire ROS ecosystem baggage while providing the familiar publisher-subscriber pattern for the 90% of use cases that don't need the full complexity of ROS2.
 
 ✨ **Cross-platform and easy to install**: `TinyROS` comes without installation headaches and is extremely lean while being cross-platform. You can develop on macOS, Windows, Linux, etc. It maintains the same (or better) efficiency as ROS2 implementations while being completely written in Python. We increase flexibility, ease of use, clarity, and reduce package size without compromising performance.
 
@@ -50,9 +50,11 @@ For the installation from source or for development, please see our [Contributin
 
 ### Supported Platforms 💻
 
-| Linux | macOS | Windows|
+| Linux | macOS | Windows |
 |---|---|---|
-|✅|✅|n/a (likely)|
+| ✅ tested | ✅ tested | ⚠️ untested |
+
+The transport runs on plain TCP loopback on every platform, so there is no Windows-specific code path. We do not run a Windows CI leg yet, so it is not advertised as supported until that lands.
 
 ## 🔥 Examples
 A full example is available in `main.py`.
