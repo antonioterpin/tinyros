@@ -103,19 +103,3 @@ should not page anyone, error lines should be investigated.
   does not print a traceback when a callback raises; it ships the
   exception. If you want a server-side log too, log inside the
   callback before re-raising.
-
----
-
-## Implementation pointers
-
-- Raise sites for `ConnectionLost`:
-  [`_client.py`](../../../src/tinyros/transport/_client.py).
-- Raise site for `SerializationError`:
-  [`_client.py`](../../../src/tinyros/transport/_client.py) (encode
-  path) and
-  [`_server.py`](../../../src/tinyros/transport/_server.py) (CALL
-  decode path).
-- Reader-loop classification:
-  [`TinyServer._reader_loop`](../../../src/tinyros/transport/_server.py).
-- Pool-submit classification:
-  [`TinyServer._submit_call`](../../../src/tinyros/transport/_server.py).
