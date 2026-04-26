@@ -854,6 +854,38 @@ def test_call_large_corrupt_metadata_drops_connection(free_port: int) -> None:
         wait_port_free(free_port)
 
 
+def test_corrupt_call_body_drops_connection(free_port: int) -> None:
+    """A CALL frame whose body fails to unpack must drop the peer.
+
+    Companion to ``test_call_large_corrupt_metadata_drops_connection``
+    for the small-payload path: ``_handle_frame`` now wraps the
+    ``_unpack_oob`` failure in :class:`SerializationError`, which the
+    reader loop classifies as bad input (warning log, drop the conn)
+    rather than a server bug. The client must see its pending future
+    fail in bounded time.
+    """
+    from tinyros.transport import _frame  # type: ignore[attr-defined]
+    from tinyros.transport._common import _MSG_CALL  # noqa: SLF001
+
+    server = TinyServer(name="t-corrupt-call", host="127.0.0.1", port=free_port)
+    server.bind("noop", lambda _x: None)
+    server.start(block=False)
+    client = TinyClient(host="127.0.0.1", port=free_port, name="t-corrupt-call-cli")
+    try:
+        bogus = _frame(_MSG_CALL, b"\x00not a pickle\x00")
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        with client._pending_lock:  # noqa: SLF001
+            client._pending[54321] = fut  # noqa: SLF001
+        client._send_queue.put((bogus, None))  # noqa: SLF001
+
+        with pytest.raises(ConnectionError):
+            fut.result(timeout=2.0)
+    finally:
+        client.close(timeout=1.0)
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
 def test_pending_futures_fail_on_send_failure(free_port: int) -> None:
     """When ``_send_loop`` hits ``OSError``, every pending future must
     resolve with ``ConnectionError`` rather than hang.
