@@ -1,29 +1,9 @@
-r"""Benchmark TinyROS communication behavior.
+"""Measure ``publish()`` latency while a separate subscriber worker blocks.
 
-Goal:
-- Worker A: slow subscriber (sleep inside callback)
-- Worker B: fast publisher measuring publish() latency
+Despite the ``test_`` filename this is a runnable script, not a pytest test;
+it is skipped cleanly if the optional ``[portal]`` extra is not installed.
 
-Requires the optional ``[portal]`` extra (only ``portal.Process`` is used,
-to spawn the subscriber worker)::
-
-    uv sync --extra portal
-    # or
-    pip install -e '.[portal]'
-
-
-
-Usage:
-
-.. code-block:: console
-
-    $ GOGGLES_PORT=8374 uv run python -m \
-        tests.benchmark.test_publish_fn_speed \
-        --num-msgs 15000 --sleep-ms 100 --wandb
-
-Despite the ``test_`` filename this is a runnable script, not a pytest
-test. When collected by pytest it is skipped cleanly if ``portal`` is
-not installed.
+See ``docs/guides/benchmarks.md`` for install and run instructions.
 """
 
 from __future__ import annotations

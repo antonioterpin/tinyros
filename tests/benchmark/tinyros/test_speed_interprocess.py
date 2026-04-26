@@ -1,35 +1,11 @@
-r"""Two-process TinyROS transport benchmark.
+"""Two-process TinyROS round-trip latency benchmark with content verification.
 
-Spawns a subscriber process and a publisher process (the pytest worker),
-measures per-message round-trip latency across a small matrix of payload
-types and sizes, and reports min / median / p50 / p95 / p99 / max / mean
-/ stdev.
+Verifies that per-message round-trip latency stays bounded across a matrix of
+payload types and sizes, and that every payload round-trips byte-identically
+with no dropped or reordered messages.
 
-Mirrors the goggles ``examples/105_benchmark.py`` design:
-
-- every payload category is isolated in its own process pair so the
-  transport state does not leak between cases;
-- scalars, strings, bytes, and ndarray sweeps (CPU only) are covered;
-- ndarray sizes span both the inline (< 64 KiB) and the shared-memory
-  (>= 64 KiB) code paths, so we can see the shm fast path kick in.
-
-Correctness instrumentation (added on top of the latency bench):
-
-- every iteration ``i`` builds a payload that encodes ``i`` as a
-  *pattern* in a type-specific way (leading decimal digits for
-  strings/bytes, ``arr.flat[0]`` for ndarrays, the value itself for
-  scalars);
-- the subscriber's callback decodes ``i`` from the incoming payload,
-  increments a monotonic counter, and returns ``(i, counter)``;
-- the publisher asserts both fields on every reply -- so we verify
-  per-message content correctness *and* end-to-end delivery count
-  without adding significant measurement overhead (the assertions run
-  after ``future.result()``, outside the timed region).
-
-Run with::
-
-    uv run pytest -m run_explicitly \
-        tests/benchmark/tinyros/test_speed_interprocess.py -s
+See ``docs/guides/benchmarks.md`` for design notes (payload categories,
+isolation, correctness instrumentation) and run instructions.
 """
 
 from __future__ import annotations

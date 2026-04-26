@@ -1,17 +1,9 @@
-"""Benchmark tests for portal message passing speed with CPU/GPU payloads.
+"""Portal parity benchmark: same harness as the TinyROS CPU/GPU sweep.
 
-Requires the optional ``[portal]`` extra::
+Skipped cleanly via ``pytest.importorskip`` when the optional ``[portal]``
+extra is not installed.
 
-    uv sync --extra portal
-    # or
-    pip install -e '.[portal]'
-
-Run with::
-
-    pytest -m run_explicitly tests/benchmark/portal/test_speed_portal.py
-
-If ``portal`` is not installed the module is skipped cleanly via
-``pytest.importorskip``.
+See ``docs/guides/benchmarks.md`` for install and run instructions.
 """
 
 from __future__ import annotations
