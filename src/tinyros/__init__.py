@@ -10,16 +10,25 @@ from .node import (
     TinyNodeDescription,
     TinySubscription,
 )
-from .transport import TinyClient, TinyServer
+from .transport import (
+    ConnectionLost,
+    SerializationError,
+    TinyClient,
+    TinyServer,
+    TransportError,
+)
 
 __version__ = "0.3.1"
 __all__ = [
+    "ConnectionLost",
+    "SerializationError",
     "TinyClient",
     "TinyNetworkConfig",
     "TinyNode",
     "TinyNodeDescription",
     "TinyServer",
     "TinySubscription",
+    "TransportError",
     "get_logger",
     "setup_console_logging",
 ]
