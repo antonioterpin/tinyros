@@ -1,6 +1,6 @@
-"""Benchmark tests for tinyros message passing speed with CPU/GPU payloads.
+"""Benchmark TinyROS message-passing throughput across CPU and GPU payloads.
 
-Run with: pytest -m run_explicitly tests/benchmark/tinyros/test_speed_tinyros.py
+See ``docs/guides/benchmarks.md`` for run instructions.
 """
 
 import csv
