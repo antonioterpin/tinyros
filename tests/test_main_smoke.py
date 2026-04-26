@@ -66,6 +66,11 @@ def test_main_runs_and_shuts_down_cleanly() -> None:
     env = os.environ.copy()
     # Force unbuffered stdio so the parent sees logs in real time.
     env["PYTHONUNBUFFERED"] = "1"
+    # Bypass goggles for this subprocess: its async event bus does not
+    # route output through stdout/stderr in a way subprocess.PIPE can
+    # reliably capture, especially across mp-spawn children. The
+    # stdlib fallback writes synchronously and shows up in the pipe.
+    env["TINYROS_LOG_FORCE_STDLIB"] = "1"
 
     proc = subprocess.Popen(
         [sys.executable, str(_MAIN_PY)],
