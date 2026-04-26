@@ -10,6 +10,7 @@ Single source of truth for all TinyROS documentation. Start here.
 |---|---|
 | [overview.md](guides/architecture/overview.md) | Top-level layout, core concepts, where to make changes |
 | [transport.md](guides/architecture/transport.md) | Wire protocol, framing, shared-memory fast path, threading |
+| [transport-error-contract.md](guides/architecture/transport-error-contract.md) | Exception hierarchy, what each side logs, what the caller's future resolves with |
 | [tiny-objects.md](guides/architecture/tiny-objects.md) | Runtime behavior of TinyServer / TinyClient / TinyNode: state machines, backpressure, reconnect, failure modes |
 
 ---
