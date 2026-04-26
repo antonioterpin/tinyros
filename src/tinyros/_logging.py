@@ -30,3 +30,27 @@ def get_logger(name: str, *, scope: str | None = None) -> Any:
     if _gg is not None:
         return _gg.get_logger(name, scope=scope or name)
     return logging.getLogger(name)
+
+
+def setup_console_logging(level: int = logging.INFO) -> None:
+    """Route tinyros log records to the console with sane defaults.
+
+    Goggles drops messages whose scope has no attached handler, so a
+    fresh process needs an explicit attach to see anything; the stdlib
+    fallback needs ``basicConfig`` for the same reason. This helper
+    handles both cases so example code does not need a try/import dance.
+
+    Safe to call multiple times -- goggles deduplicates handlers and
+    ``basicConfig`` is a no-op when the root logger already has a
+    handler.
+
+    Args:
+        level: Minimum severity to emit. Defaults to INFO.
+    """
+    if _gg is not None:
+        _gg.attach(_gg.ConsoleHandler(level=level), scopes=["tinyros"])
+        return
+    logging.basicConfig(
+        level=level,
+        format="[%(asctime)s] %(name)s %(levelname)s %(message)s",
+    )

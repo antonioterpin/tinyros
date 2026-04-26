@@ -13,7 +13,6 @@ Each actor is implemented as a class inheriting from :class:`TinyNode`.
 
 from __future__ import annotations
 
-import logging
 import multiprocessing as mp
 import os
 import time
@@ -21,12 +20,14 @@ import time
 import numpy as np
 import yaml
 
-from tinyros import TinyNetworkConfig, TinyNode, get_logger
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(name)s %(levelname)s %(message)s",
+from tinyros import (
+    TinyNetworkConfig,
+    TinyNode,
+    get_logger,
+    setup_console_logging,
 )
+
+setup_console_logging()
 _logger = get_logger("tinyros.example", scope="tinyros.example")
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "network_config.yaml")

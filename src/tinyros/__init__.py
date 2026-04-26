@@ -3,7 +3,7 @@
 Nothing outside of this module's ``__all__`` is considered public.
 """
 
-from ._logging import get_logger
+from ._logging import get_logger, setup_console_logging
 from .node import (
     TinyNetworkConfig,
     TinyNode,
@@ -21,4 +21,5 @@ __all__ = [
     "TinyServer",
     "TinySubscription",
     "get_logger",
+    "setup_console_logging",
 ]
