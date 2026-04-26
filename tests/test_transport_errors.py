@@ -38,7 +38,7 @@ def test_top_level_reexports_match_module_classes() -> None:
 
 
 def test_connection_lost_is_subclass_of_transport_error() -> None:
-    """Callers can catch any transport failure with ``except TransportError``."""
+    """``except TransportError`` covers every drop the hierarchy emits."""
     assert issubclass(ConnectionLost, TransportError)
 
 
@@ -64,7 +64,7 @@ def test_serialization_error_is_not_a_connection_error() -> None:
 
 
 def test_transport_error_is_an_exception() -> None:
-    """TransportError sits under Exception so bare ``except`` does not swallow it."""
+    """TransportError sits under Exception, not BaseException."""
     assert issubclass(TransportError, Exception)
     assert not issubclass(TransportError, BaseException) or issubclass(
         TransportError, Exception
