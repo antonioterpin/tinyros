@@ -58,7 +58,7 @@ def _ports_free(ports: list[int]) -> bool:
     reason="POSIX signal semantics assumed",
 )
 def test_main_runs_and_shuts_down_cleanly() -> None:
-    """Spawn ``main.py``, observe a round-trip, signal SIGTERM, expect clean exit."""
+    """Run ``main.py``; assert round-trip, SIGTERM, clean exit."""
     ports = _ports_from_config()
     if not _ports_free(ports):
         pytest.skip(f"demo ports {ports} not free on this host")
@@ -104,9 +104,9 @@ def test_main_runs_and_shuts_down_cleanly() -> None:
         "starting ControlProcessor",
         "starting FeedbackProcessor",
     ):
-        assert marker in stdout, (
-            f"missing startup marker {marker!r} in main.py output:\n{stdout}"
-        )
+        assert (
+            marker in stdout
+        ), f"missing startup marker {marker!r} in main.py output:\n{stdout}"
 
     # Cross-node round-trip: FeedbackProcessor's callback fires only
     # after ControlProcessor has published an actuation command, which
