@@ -3096,52 +3096,50 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+logging = [
+    { name = "robo-goggles" },
+]
+
+[package.dev-dependencies]
 benchmark = [
     { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "python_full_version < '3.11'" },
     { name = "jax", version = "0.8.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "python_full_version >= '3.11'" },
+    { name = "portal" },
 ]
 dev = [
     { name = "basedpyright" },
+    { name = "build" },
     { name = "hypothesis" },
     { name = "matplotlib" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "robo-goggles", extra = ["jax", "wandb"] },
-]
-logging = [
-    { name = "robo-goggles" },
-]
-portal = [
-    { name = "portal" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "build" },
     { name = "twine" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "basedpyright", marker = "extra == 'dev'", specifier = ">=1.37.1" },
-    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "jax", extras = ["cuda12"], marker = "extra == 'benchmark'", specifier = ">=0.6.2" },
-    { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=1.24.0" },
-    { name = "portal", marker = "extra == 'portal'", specifier = ">=0.1.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = "==4.0.1" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "robo-goggles", marker = "extra == 'logging'", git = "https://github.com/antonioterpin/goggles.git?branch=dev" },
-    { name = "robo-goggles", extras = ["wandb", "jax"], marker = "extra == 'dev'", git = "https://github.com/antonioterpin/goggles.git?branch=dev" },
 ]
-provides-extras = ["dev", "logging", "portal", "benchmark"]
+provides-extras = ["logging"]
 
 [package.metadata.requires-dev]
+benchmark = [
+    { name = "jax", extras = ["cuda12"], specifier = ">=0.6.2" },
+    { name = "portal", specifier = ">=0.1.0" },
+]
 dev = [
+    { name = "basedpyright", specifier = ">=1.37.1" },
     { name = "build", specifier = ">=1.3.0" },
+    { name = "hypothesis", specifier = ">=6.0.0" },
+    { name = "matplotlib", specifier = ">=3.10.8" },
+    { name = "pre-commit", specifier = "==4.0.1" },
+    { name = "pytest", specifier = ">=7.0.0" },
+    { name = "pytest-cov", specifier = ">=4.0.0" },
+    { name = "robo-goggles", extras = ["wandb", "jax"], git = "https://github.com/antonioterpin/goggles.git?branch=dev" },
     { name = "twine", specifier = ">=6.2.0" },
 ]
 

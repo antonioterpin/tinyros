@@ -1,5 +1,5 @@
 # Contributing
-This page summarizes the development workflow and software engineering practices adopted in this codebase. This project is written in Python 3.11+ and uses JAX/Flax.
+This page summarizes the development workflow and software engineering practices adopted in this codebase. This project targets Python 3.10+.
 
 - [Development workflow](#development-workflow)
 - [Testing a feature](#testing-a-feature)
@@ -14,11 +14,8 @@ This page summarizes the development workflow and software engineering practices
 ├── src/                    # Source code
 ├── tests/                  # Test suite
 ├── docs/                   # Documentation
-├── scripts/                # Utils, like custom hooks
 ├── .pre-commit-config.yaml # Code quality hooks
 ├── pyproject.toml          # Project configuration
-├── Dockerfile              # Container setup
-├── docker-compose.yaml     # Development containers
 └── CONTRIBUTING.md         # Development guidelines
 ```
 
@@ -28,9 +25,14 @@ If you do not have it yet, install it with:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-To provision the local environment with development tools only:
+To provision the local environment with development tools:
 ```sh
-uv sync --extra dev
+uv sync --group dev
+```
+
+To additionally install the comparison benchmarks (JAX, portal):
+```sh
+uv sync --group dev --group benchmark
 ```
 
 Run the application with (see the [README.md](README.md) for details on the usage):
