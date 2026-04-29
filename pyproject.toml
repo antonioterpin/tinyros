@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,15 +7,25 @@ name = "tinyros"
 version = "0.4.1"
 description = "A minimal operating system for robotics."
 readme = "README.md"
-license = { text = "MIT" }
-urls = { Homepage = "https://github.com/antonioterpin/tinyros" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    { name = "Antonio Terpin", email = "aterpin@ethz.ch" },
+    { name = "Antonio Terpin", email = "antonio.terpin@gmail.com" },
 ]
+keywords = ["robotics", "ros", "pubsub", "rpc", "ipc"]
 classifiers = [
-  "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
   "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Software Development :: Libraries",
+  "Topic :: System :: Distributed Computing",
+  "Typing :: Typed",
 ]
 requires-python = ">=3.10"
 
@@ -29,36 +39,30 @@ dependencies = [
     "numpy>=1.24.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/antonioterpin/tinyros"
+Source = "https://github.com/antonioterpin/tinyros"
+Issues = "https://github.com/antonioterpin/tinyros/issues"
+Changelog = "https://github.com/antonioterpin/tinyros/releases"
+
 [tool.uv.sources]
 # uv-only hint: dev environments pick up the dev branch of goggles.
 # Stripped from the published wheel's metadata -- end users installing
 # from PyPI never see this line.
 robo-goggles = { git = "https://github.com/antonioterpin/goggles.git", branch = "dev" }
 
-# Optional dependencies
+# Public optional dependencies (advertised on PyPI as `tinyros[<name>]`).
+# Contributor-only deps live in `[dependency-groups]` below so they don't
+# leak into the published wheel's metadata.
 [project.optional-dependencies]
-dev = [
-    "matplotlib>=3.10.8",
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "hypothesis>=6.0.0",
-    "pre_commit==4.0.1",
-    "basedpyright>=1.37.1",
-    "robo-goggles[wandb,jax]",
-]
 # Opt-in structured logging via goggles. Core tinyros works without it.
 logging = [
     "robo-goggles",
 ]
-# Optional: only needed to run the comparison benchmarks under
-# tests/benchmark/portal/ and tests/benchmark/test_publish_fn_speed.py.
-# Install with: `uv sync --extra portal` or `pip install -e '.[portal]'`.
-portal = [
-    "portal>=0.1.0",
-]
-benchmark = [
-    "jax[cuda12]>=0.6.2",  # keep only the GPU override
-]
+
+# Ship the py.typed marker so type-checkers consume the package's types.
+[tool.setuptools.package-data]
+tinyros = ["py.typed"]
 
 # Pytest configuration
 [tool.pytest.ini_options]
@@ -138,10 +142,25 @@ typeCheckingMode = "basic"
 reportMissingImports = false
 reportMissingTypeStubs = false
 
+# Contributor-only dependency groups (PEP 735). Not advertised on PyPI.
+# Install with `uv sync --group <name>`.
 [dependency-groups]
 dev = [
+    "matplotlib>=3.10.8",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "hypothesis>=6.0.0",
+    "pre_commit==4.0.1",
+    "basedpyright>=1.37.1",
+    "robo-goggles[wandb,jax]",
     "build>=1.3.0",
     "twine>=6.2.0",
+]
+# Comparison benchmarks under tests/benchmark/portal/ and the JAX-driven
+# load generators under tests/benchmark/{portal,tinyros}/.
+benchmark = [
+    "jax[cuda12]>=0.6.2",
+    "portal>=0.1.0",
 ]
 
 # Bandit static security scan. Pickle deserialization (B301, B403) is
