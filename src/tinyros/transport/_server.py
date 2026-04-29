@@ -133,6 +133,10 @@ class TinyServer:
         Raises:
             RuntimeError: If called after :meth:`start` (the server is
                 already accepting connections).
+            ValueError: If ``name`` is already bound. Re-binding silently
+                hides typos that happen to collide with an existing
+                callback name; callers that truly want to replace a
+                binding must drop the prior one explicitly.
         """
         with self._state_lock:
             if self._started:
@@ -140,6 +144,12 @@ class TinyServer:
                     f"{self.name}: bind({name!r}, ...) called after "
                     f"start(); register all callbacks before starting "
                     f"the server"
+                )
+            if name in self._callbacks:
+                raise ValueError(
+                    f"{self.name}: bind({name!r}, ...) called twice; "
+                    f"the existing binding would be silently overwritten. "
+                    f"Drop one of the bind() calls."
                 )
             self._callbacks[name] = fn
 

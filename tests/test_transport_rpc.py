@@ -223,6 +223,23 @@ def test_bind_after_start_raises(free_port: int) -> None:
         wait_port_free(free_port)
 
 
+def test_bind_duplicate_name_raises(free_port: int) -> None:
+    """Binding the same name twice must fail loudly.
+
+    Silent overwrite hides typos that collide with an existing callback
+    name (e.g. two topics in the network config accidentally pointing
+    at the same callable name). Force the caller to be explicit.
+    """
+    server = TinyServer(name="t-bind-dup", host="127.0.0.1", port=free_port)
+    server.bind("noop", lambda x: x)
+    try:
+        with pytest.raises(ValueError, match="called twice"):
+            server.bind("noop", lambda x: x)
+    finally:
+        server.close(timeout=1.0)
+        wait_port_free(free_port)
+
+
 def test_server_bounded_inflight(free_port: int) -> None:
     """The server honours ``max_in_flight`` -- backpressure caps the
     number of simultaneously running/queued calls.
