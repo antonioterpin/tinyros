@@ -56,9 +56,10 @@ by name.
 
 ### Transport
 
-`TinyTransport` provides the RPC plumbing under `TinyNode`. Each node owns
-a `TinyServer` (accepts inbound calls) and may own any number of
-`TinyClient`s (makes outbound calls to other nodes).
+The `tinyros.transport` package provides the RPC plumbing under
+`TinyNode`. Each node owns a `TinyServer` (accepts inbound calls) and
+may own any number of `TinyClient`s (makes outbound calls to other
+nodes).
 
 See [`transport.md`](transport.md) for the wire protocol, framing, and
 the shared-memory fast path for large numpy payloads.
