@@ -1,7 +1,9 @@
 # 🤖 TinyROS - A minimal operating systems for Robots
 
 [![GitHub stars](https://img.shields.io/github/stars/antonioterpin/tinyros?style=social)](https://github.com/antonioterpin/tinyros/stargazers)
+[![Tests](https://github.com/antonioterpin/tinyros/actions/workflows/tests.yaml/badge.svg)](https://github.com/antonioterpin/tinyros/actions/workflows/tests.yaml)
 [![Code Style](https://github.com/antonioterpin/tinyros/actions/workflows/code-style.yaml/badge.svg)](https://github.com/antonioterpin/tinyros/actions/workflows/code-style.yaml)
+[![CodeQL](https://github.com/antonioterpin/tinyros/actions/workflows/codeql.yaml/badge.svg)](https://github.com/antonioterpin/tinyros/actions/workflows/codeql.yaml)
 [![PyPI version](https://img.shields.io/pypi/v/tinyros.svg)](https://pypi.org/project/tinyros)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -24,6 +26,19 @@ A minimal implementation of an operating system for robots, to ease the integrat
 - *Reliability*: Eliminates race conditions and discovery-related failures
 
 We believe that for most robotics applications, the network topology is known at design time and changes infrequently. Embracing this reality leads to simpler, more robust systems.
+
+## 🛡️ Quality and supply chain
+
+Engineering practices are wired into CI so they cannot silently regress:
+
+- **Tested on Python 3.10, 3.11, and 3.12** — every PR runs `pytest` and `basedpyright` across the full matrix ([tests.yaml](./.github/workflows/tests.yaml)).
+- **Code style enforced** — `black`, `ruff`, `pyupgrade`, and `bandit` via pre-commit on every PR ([code-style.yaml](./.github/workflows/code-style.yaml)).
+- **Static security analysis** — [CodeQL](./.github/workflows/codeql.yaml) with the `security-extended` query pack on every PR plus a weekly cron.
+- **Runtime-dependency CVE scanning** — [pip-audit](./.github/workflows/audit.yaml) against the runtime tree (`uv export --no-dev`) on every PR plus a weekly cron, so dev-tool CVEs do not generate noise.
+- **Automated dependency updates** — Dependabot weekly bumps for `pip` and `github-actions` ([dependabot.yml](./.github/dependabot.yml)).
+- **Tag-driven releases** — pushing `vX.Y.Z` triggers a workflow that verifies the tag matches `pyproject.toml`, builds, publishes to PyPI via OIDC trusted publishing (no API tokens stored in the repo), and creates the GitHub Release ([release.yaml](./.github/workflows/release.yaml), [release guide](./docs/guides/release.md)).
+- **Benchmark bitrot guard** — weekly cron runs the explicit benchmark suites so they do not silently break ([benchmarks.yaml](./.github/workflows/benchmarks.yaml)).
+- **Vulnerability disclosure policy** — see [SECURITY.md](./SECURITY.md).
 
 ## 🏗️ Projects Built with TinyROS
 
