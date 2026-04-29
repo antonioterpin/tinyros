@@ -24,6 +24,7 @@ Single source of truth for all TinyROS documentation. Start here.
 | [agent-development.md](guides/agent-development.md) | Using TinyROS with Claude Code, Antigravity, and custom agents |
 | [troubleshooting.md](guides/troubleshooting.md) | Common operational failure modes (stuck nodes, leaked shm, port reuse) and how to fix them |
 | [benchmarks.md](guides/benchmarks.md) | TinyROS / portal / ROS 2 benchmark suites: install, design notes, run commands |
+| [release.md](guides/release.md) | Cutting a release: tag-driven PyPI publish + GitHub Release |
 
 ---
 
