@@ -52,12 +52,58 @@ For the installation from source or for development, please see our [Contributin
 
 | Linux | macOS | Windows |
 |---|---|---|
-| ✅ tested | ✅ tested | ⚠️ untested |
+| ✅ | ✅ | ✅ |
 
-The transport runs on plain TCP loopback on every platform, so there is no Windows-specific code path. We do not run a Windows CI leg yet, so it is not advertised as supported until that lands.
+The transport sits on plain TCP (`AF_INET` + `SOCK_STREAM`) with a `multiprocessing.shared_memory` side-channel for large ndarray payloads — no `fork`, no POSIX-only system calls, no OS-conditional code paths. The same wire runs on Linux, macOS, and Windows. Linux and macOS are exercised in CI; Windows is known to work but not yet covered by an automated CI leg.
 
 ## 🔥 Examples
-A full example is available in `main.py`.
+
+A full multi-process example lives in [`main.py`](./main.py) with its topology in [`network_config.yaml`](./network_config.yaml). The minimal shape is:
+
+```yaml
+# network_config.yaml
+nodes:
+  SensorNode:  { port: 5001, host: localhost }
+  ControlNode: { port: 5002, host: localhost }
+
+connections:
+  SensorNode:
+    obs:
+      - { actor: ControlNode, cb_name: on_obs }
+```
+
+```python
+# nodes.py
+import yaml
+from tinyros import TinyNetworkConfig, TinyNode
+
+config = TinyNetworkConfig.load_from_config(
+    yaml.safe_load(open("network_config.yaml"))
+)
+
+class SensorNode(TinyNode):
+    def __init__(self) -> None:
+        super().__init__(name="SensorNode", network_config=config)
+
+    def tick(self, value: float) -> None:
+        self.publish("obs", value)  # fan-out to every subscriber of "obs"
+
+class ControlNode(TinyNode):
+    def __init__(self) -> None:
+        super().__init__(name="ControlNode", network_config=config)
+
+    def on_obs(self, value: float) -> None:  # bound by name from the YAML
+        ...  # react to the observation
+```
+
+Callbacks are looked up on the subclass by the `cb_name` declared in the YAML — there is no decorator, no registration call, and no runtime topic discovery.
+
+## 📚 Learn more
+
+- [Architecture overview](./docs/guides/architecture/overview.md) — module layout and where to make changes.
+- [Transport](./docs/guides/architecture/transport.md) — wire protocol, framing, and the shared-memory fast path.
+- [Benchmarks](./docs/guides/benchmarks.md) — latency / throughput suites with parity baselines against `portal` and ROS 2.
+- [Documentation index](./docs/index.md) — full table of contents.
 
 ## 🤝 Contributing
 
