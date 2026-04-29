@@ -1,0 +1,36 @@
+name: Benchmarks
+
+on:
+    workflow_dispatch:
+    schedule:
+        - cron: '0 5 * * 0'   # Sunday 05:00 UTC
+
+permissions:
+    contents: read
+
+jobs:
+    benchmarks:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Check out code
+              uses: actions/checkout@v4
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v6
+              with:
+                  python-version: '3.12'
+                  enable-cache: true
+
+            - name: Install dependencies (dev + benchmark)
+              run: uv sync --group dev --group benchmark
+
+            # The ros2 directory is excluded via `norecursedirs` in
+            # pyproject.toml; running the others is enough to catch
+            # bitrot in the tinyros and portal benchmark code paths.
+            - name: Run benchmarks
+              run: |
+                  uv run pytest \
+                      -m run_explicitly \
+                      tests/benchmark/tinyros \
+                      tests/benchmark/portal
