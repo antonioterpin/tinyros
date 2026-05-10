@@ -16,8 +16,6 @@ from .node import (
 from .transport import (
     ConnectionLost,
     SerializationError,
-    TinyClient,
-    TinyServer,
     TransportError,
 )
 
@@ -25,14 +23,13 @@ try:
     __version__ = _version("tinyros")
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
+
 __all__ = [
     "ConnectionLost",
     "SerializationError",
-    "TinyClient",
     "TinyNetworkConfig",
     "TinyNode",
     "TinyNodeDescription",
-    "TinyServer",
     "TinySubscription",
     "TransportError",
     "get_logger",

@@ -37,6 +37,7 @@ requires-python = ">=3.10"
 dependencies = [
     "PyYAML>=6.0.0",
     "numpy>=1.24.0",
+    "iceoryx2>=0.8.0",
 ]
 
 [project.urls]

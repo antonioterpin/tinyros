@@ -2,23 +2,18 @@
 
 Confirms the inheritance contract callers rely on -- in particular
 that pre-hierarchy code using ``except ConnectionError`` still
-catches the new typed :class:`ConnectionLost` -- and that the encode
-path raises a typed :class:`SerializationError`.
+catches the new typed :class:`ConnectionLost`.
 """
 
 from __future__ import annotations
 
-import threading
-
 import pytest
 
-from tests.conftest import wait_port_free
 from tinyros import (
     ConnectionLost,
     SerializationError,
     TransportError,
 )
-from tinyros.transport import TinyClient, TinyServer
 from tinyros.transport._errors import (
     ConnectionLost as _ConnectionLost,
 )
@@ -66,25 +61,3 @@ def test_serialization_error_is_not_a_connection_error() -> None:
 def test_transport_error_is_an_exception() -> None:
     """TransportError sits under Exception, not BaseException."""
     assert issubclass(TransportError, Exception)
-    assert not issubclass(TransportError, BaseException) or issubclass(
-        TransportError, Exception
-    )
-
-
-def test_unpicklable_arg_surfaces_as_serialization_error(free_port: int) -> None:
-    """Sending a non-picklable arg fails the future with SerializationError."""
-    server = TinyServer(name="t-srv", host="127.0.0.1", port=free_port)
-    server.bind("noop", lambda x: x)
-    server.start(block=False)
-    client = TinyClient(host="127.0.0.1", port=free_port, name="t-cli")
-    try:
-        # ``threading.Lock`` instances are not picklable; the encode
-        # path must raise -- and the future must surface that as a
-        # typed SerializationError, not a bare ``TypeError``.
-        fut = client.call("noop", threading.Lock())
-        with pytest.raises(SerializationError):
-            fut.result(timeout=2.0)
-    finally:
-        client.close(timeout=1.0)
-        server.close(timeout=1.0)
-    wait_port_free(free_port)

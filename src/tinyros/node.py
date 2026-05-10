@@ -1,64 +1,34 @@
-"""TinyROS node implementation.
+"""TinyROS node implementation (iceoryx2 transport).
 
 Provides the user-facing pub/sub API:
 
-- :class:`TinyNode`: base class for all ROS-like nodes. A node binds a
-  server on its configured port, publishes to the servers of its
-  subscribers, and invokes subscriber callbacks by name.
+- :class:`TinyNode`: base class for all ROS-like nodes. Each node owns
+  one iceoryx2 IPC node, opens a publisher per topic it produces, and
+  spawns a subscriber dispatch thread per topic it consumes.
 - :class:`TinySubscription`: descriptor for a single subscription.
 - :class:`TinyNodeDescription`: network-level description of a node.
+  ``host`` / ``port`` are kept for backward compatibility with
+  pre-migration ``network_config.yaml`` files but are ignored by the
+  iceoryx2 wire (services are addressed by name, not by socket).
 - :class:`TinyNetworkConfig`: immutable network topology.
 
-The wire lives in :mod:`tinyros.transport`; nodes are unaware of the
-underlying socket / shared-memory mechanics.
+The wire lives in :mod:`tinyros.transport._iox`; nodes are unaware of
+the underlying shared-memory mechanics.
 """
 
 from __future__ import annotations
 
 import atexit
 import concurrent.futures
-import ipaddress
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType, TracebackType
 from typing import Any
 
 from ._logging import get_logger
-from .transport import TinyClient, TinyServer
+from .transport._iox import _Publisher, _Subscriber, make_node
 
 _logger = get_logger("tinyros.node", scope="tinyros.node")
-
-_LOOPBACK_HOST_ALIASES = frozenset({"localhost"})
-
-
-def _is_loopback_host(host: str) -> bool:
-    """Return True when ``host`` binds only to the loopback interface.
-
-    Args:
-        host: String passed to ``socket.bind`` in the current transport,
-            which supports IPv4 literals and hostname aliases.
-            ``0.0.0.0`` is treated as non-loopback (it binds every
-            interface); any address in ``127.0.0.0/8`` and ``localhost``
-            are loopback. IPv6 literals are not supported by the
-            transport and would fail at bind regardless.
-
-    Returns:
-        ``True`` if ``host`` is known to be loopback, ``False``
-        otherwise (including any custom hostname that cannot be
-        verified statically).
-    """
-    if host in _LOOPBACK_HOST_ALIASES:
-        return True
-    try:
-        addr = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    if isinstance(addr, ipaddress.IPv6Address):
-        # Current transport binds AF_INET only; IPv6 literals can't be
-        # bound, so refuse to mark them loopback -- that would let a
-        # user think ``::1`` is usable when it isn't.
-        return False
-    return addr.is_loopback
 
 
 @dataclass(frozen=True)
@@ -76,15 +46,21 @@ class TinySubscription:
 
 @dataclass(frozen=True)
 class TinyNodeDescription:
-    """Network connection details for a TinyROS node.
+    """Identity of a TinyROS node within a network.
+
+    ``host`` and ``port`` are kept for backward compatibility with
+    legacy ``network_config.yaml`` files written for the TCP transport.
+    The iceoryx2 transport addresses peers by service name only and
+    ignores both fields at runtime.
 
     Args:
-        port: TCP port the node listens on.
-        host: Host address where the node is running.
+        port: TCP port -- ignored, kept for legacy YAML compatibility.
+        host: Host address -- ignored, kept for legacy YAML
+            compatibility. Defaults to ``"localhost"``.
     """
 
-    port: int
-    host: str
+    port: int = 0
+    host: str = "localhost"
 
 
 @dataclass(frozen=True)
@@ -122,12 +98,6 @@ class TinyNetworkConfig:
     def get_node_by_name(self, name: str) -> TinyNodeDescription:
         """Look up a node by name.
 
-        Args:
-            name: Node name to look up.
-
-        Returns:
-            The matching :class:`TinyNodeDescription`.
-
         Raises:
             ValueError: If ``name`` is not in the config.
         """
@@ -138,31 +108,27 @@ class TinyNetworkConfig:
     def get_publishers_for_node(
         self, node_name: str
     ) -> Mapping[str, tuple[TinySubscription, ...]]:
-        """Get topics that ``node_name`` publishes and their subscribers.
-
-        Args:
-            node_name: Node whose outbound topics to return.
-
-        Returns:
-            Mapping of topic name to the tuple of subscriptions.
-        """
+        """Get topics that ``node_name`` publishes and their subscribers."""
         return self.connections.get(node_name, MappingProxyType({}))
 
-    def get_subscribers_for_node(self, node_name: str) -> dict[str, str]:
-        """Get topics that ``node_name`` subscribes to, keyed by topic.
-
-        Args:
-            node_name: Node whose inbound subscriptions to return.
+    def get_subscribers_for_node(self, node_name: str) -> dict[str, tuple[str, str]]:
+        """Get topics that ``node_name`` subscribes to.
 
         Returns:
-            Mapping of topic name to callback name registered locally.
+            Mapping of ``topic_name -> (publisher_name, callback_name)``.
+            Subscription names are unique per ``(publisher, topic)``
+            pair, so the topic key alone would be ambiguous when the
+            same topic name is used by multiple publishers.
         """
-        subscribers: dict[str, str] = {}
-        for topics in self.connections.values():
+        subscribers: dict[str, tuple[str, str]] = {}
+        for publisher, topics in self.connections.items():
             for topic_name, subscriptions in topics.items():
                 for subscription in subscriptions:
                     if subscription.actor == node_name:
-                        subscribers[topic_name] = subscription.cb_name
+                        subscribers[topic_name] = (
+                            publisher,
+                            subscription.cb_name,
+                        )
         return subscribers
 
     @classmethod
@@ -170,15 +136,10 @@ class TinyNetworkConfig:
         """Parse a dictionary into a :class:`TinyNetworkConfig`.
 
         Validates that every publisher and every subscription actor is
-        declared in ``nodes`` before returning, so a typo in the YAML
-        raises a clear error here instead of blowing up later during
-        :class:`TinyNode` setup.
+        declared in ``nodes`` before returning.
 
         Args:
             config: Raw config dictionary (typically from YAML).
-
-        Returns:
-            The parsed immutable network config.
 
         Raises:
             ValueError: If a publisher or subscription actor references
@@ -186,7 +147,8 @@ class TinyNetworkConfig:
         """
         nodes = {
             node_name: TinyNodeDescription(
-                port=node_data["port"], host=node_data["host"]
+                port=node_data.get("port", 0),
+                host=node_data.get("host", "localhost"),
             )
             for node_name, node_data in config["nodes"].items()
         }
@@ -216,14 +178,14 @@ class TinyNetworkConfig:
 
 
 class TinyNode:
-    """Base class for TinyROS nodes.
+    """Base class for TinyROS nodes (iceoryx2 transport).
 
-    A node:
+    Each node:
 
-    1. Reads its port/host from the network config.
-    2. Starts a server bound to every callback method named in the config.
-    3. Opens one client per distinct ``(host, port)`` it publishes to.
-    4. Dispatches :meth:`publish` to every subscription for the topic.
+    1. Reads its identity from the network config.
+    2. Opens an iceoryx2 publisher per topic it produces.
+    3. Spawns a subscriber dispatch thread per topic it consumes,
+       resolving the callback by attribute lookup on the subclass.
 
     Long-running nodes should call :meth:`shutdown` explicitly or use
     the node as a context manager::
@@ -239,64 +201,32 @@ class TinyNode:
         self,
         name: str,
         network_config: TinyNetworkConfig,
-        *,
-        bind_host: str = "127.0.0.1",
     ) -> None:
         """Initialize the node.
 
         Args:
             name: Node name; must appear in ``network_config.nodes``.
             network_config: Immutable topology describing the network.
-            bind_host: Local interface to bind the server on. Defaults
-                to the loopback interface (``127.0.0.1``) because the
-                wire format deserializes with ``pickle.loads``, which
-                is equivalent to arbitrary code execution for anyone
-                who can open the port. Override with ``0.0.0.0`` or a
-                specific interface address when a non-loopback bind is
-                genuinely needed; a warning is logged in that case as
-                a reminder that no authentication exists between peers.
 
         Raises:
-            ValueError: If ``name`` is not present in the config.
+            ValueError: If ``name`` is not present in the config or a
+                subscribed callback is missing or non-callable.
         """
         self.name = name
         self.network_config = network_config
+        # validate the name early so a typo fails before iceoryx2
+        # creates any on-disk service files
         node_description = self.network_config.get_node_by_name(name)
+        # ``port`` is retained as an attribute for backward compatibility
+        # with example code that logs it; the iceoryx2 wire ignores it.
         self.port = node_description.port
 
-        if not _is_loopback_host(bind_host):
-            _logger.warning(
-                f"{name}: binding to non-loopback host {bind_host!r}. "
-                f"TinyROS deserializes the wire with pickle.loads, so "
-                f"anyone who can connect to port {self.port} can "
-                f"execute arbitrary code in this process. Use only on "
-                f"a trusted network."
-            )
+        self._iox_node = make_node()
+        self._publishers: dict[str, _Publisher] = {}
+        self._subscribers: list[_Subscriber] = []
 
-        self.server = TinyServer(
-            name=f"{name}_{self.port}",
-            host=bind_host,
-            port=self.port,
-        )
-
-        self.topic_calls: dict[str, list[tuple[str, str]]] = {}
-        self.clients: dict[str, TinyClient] = {}
-
-        # Order matters: bind the subscriber callbacks, then open the
-        # listen socket so peers can connect to us, *then* dial out to
-        # peers. With the reverse order a multi-process topology with
-        # cyclic publishes (A -> B and B -> A) deadlocks: each node
-        # blocks in TinyClient.__init__ waiting for its peer's listen
-        # socket, which the peer can only open after its own outbound
-        # dials succeed.
         self._setup_subscriptions()
         atexit.register(self.shutdown)
-        self.server.start(block=False)
-        # If outbound dialing fails (e.g., a peer never came up within
-        # connect_timeout) we have already started the server thread
-        # and registered atexit -- tear those down before re-raising
-        # so __init__ does not leak a running listen socket and a
-        # shutdown hook for an object whose construction failed.
         try:
             self._setup_publishing()
         except BaseException:
@@ -310,133 +240,108 @@ class TinyNode:
             raise
 
     def _setup_publishing(self) -> None:
-        """Open clients to each peer this node publishes to."""
+        """Open one iceoryx2 publisher per outbound topic."""
         published_topics = self.network_config.get_publishers_for_node(self.name)
-        for topic_name, subscriptions in published_topics.items():
-            self.topic_calls[topic_name] = []
-            for subscription in subscriptions:
-                subscriber_node = self.network_config.get_node_by_name(
-                    subscription.actor
-                )
-                client_key = f"{subscriber_node.host}:{subscriber_node.port}"
-                if client_key not in self.clients:
-                    self.clients[client_key] = TinyClient(
-                        host=subscriber_node.host,
-                        port=subscriber_node.port,
-                        name=f"{self.name} -> {subscription.actor}",
-                    )
-                self.topic_calls[topic_name].append((client_key, subscription.cb_name))
+        for topic_name in published_topics:
+            self._publishers[topic_name] = _Publisher(
+                self._iox_node, self.name, topic_name
+            )
         _logger.info(
-            f"{self.name}: publishing topics "
-            f"{list(self.topic_calls.keys())} via {len(self.clients)} "
-            f"clients"
+            f"{self.name}: publishing topics " f"{list(self._publishers.keys())}"
         )
 
     def _setup_subscriptions(self) -> None:
-        """Bind server callbacks for topics this node subscribes to.
+        """Spawn a subscriber dispatch thread per inbound topic.
 
         Raises:
             ValueError: If the config names a callback that is missing
                 on the subclass or resolves to a non-callable attribute.
-                Fails loudly at ``__init__`` time so a typo in
-                ``network_config.yaml`` cannot silently leave a
-                subscription unhandled at runtime.
         """
-        subscribed_topics = self.network_config.get_subscribers_for_node(self.name)
-        # Sentinel so we distinguish "attribute is missing" from
-        # "attribute exists but the subclass shadowed it with None"
-        # (e.g., ``some_cb = None`` as a placeholder). Using ``None``
-        # as the default would conflate the two and blame the user for
-        # a typo when the real issue is a non-callable shadow.
         _missing = object()
-        for topic_name, callback_name in subscribed_topics.items():
-            attr = getattr(self, callback_name, _missing)
+        subscribed = self.network_config.get_subscribers_for_node(self.name)
+        for topic_name, (publisher_name, cb_name) in subscribed.items():
+            attr = getattr(self, cb_name, _missing)
             if attr is _missing:
                 raise ValueError(
                     f"{self.name}: network config subscribes topic "
-                    f"'{topic_name}' to callback '{callback_name}', "
+                    f"'{topic_name}' to callback '{cb_name}', "
                     f"but no such method is defined on "
                     f"{type(self).__name__}"
                 )
             if not callable(attr):
                 raise ValueError(
-                    f"{self.name}: attribute '{callback_name}' "
+                    f"{self.name}: attribute '{cb_name}' "
                     f"(bound to topic '{topic_name}') is "
                     f"{type(attr).__name__}, not callable"
                 )
-            self.server.bind(callback_name, attr)
-            _logger.info(
-                f"{self.name}: bound '{callback_name}' " f"for topic '{topic_name}'"
+            self._subscribers.append(
+                _Subscriber(
+                    self._iox_node,
+                    publisher_name,
+                    topic_name,
+                    attr,
+                    on_error=lambda exc, t=topic_name, n=self.name: _logger.warning(  # noqa: E501
+                        f"{n}: subscriber for '{t}' raised {exc!r}"
+                    ),
+                )
             )
+            _logger.info(f"{self.name}: bound '{cb_name}' for topic '{topic_name}'")
 
     def publish(self, topic: str, message: Any) -> list[concurrent.futures.Future]:
-        """Publish ``message`` to every subscriber of ``topic``.
+        """Publish ``message`` on ``topic``.
 
-        Never raises synchronously. :meth:`TinyClient.call` always
-        returns a future with any transport error already set on it, so
-        callers must inspect each returned future to observe delivery
-        or callback failures. When a subscriber's client is already
-        torn down the future resolves immediately; the failure is
-        logged here for visibility but the future is still returned so
-        the caller's control flow is identical across sync and async
-        failure paths.
+        With the iceoryx2 wire, a single ``send`` reaches every
+        subscriber of the service; the per-subscriber future-list of
+        the legacy TCP transport is no longer meaningful. This method
+        returns a list with **one already-resolved future** per
+        configured subscriber so existing call sites that iterate and
+        call ``.result()`` keep working.
 
         Args:
             topic: Topic name declared in the network config.
-            message: Payload forwarded to each subscriber's callback.
+            message: Payload sent to subscribers' callbacks.
 
         Returns:
-            One future per subscriber, resolving with the callback's
-            return value (typically ``None``) or with a transport /
-            encoding / remote exception (``ConnectionError`` when the
-            socket is down, ``pickle.PicklingError`` or similar when
-            ``_encode_call`` fails, or whatever the subscriber's
-            callback raised). An empty list is returned when ``topic``
-            has no subscribers -- no error is raised so publishers can
-            run before their consumers connect.
+            A list of resolved futures (one per configured subscriber);
+            empty when ``topic`` has no subscribers.
         """
-        if topic not in self.topic_calls:
+        if topic not in self._publishers:
             _logger.warning(f"{self.name}: no subscribers for '{topic}'")
             return []
-        futures: list[concurrent.futures.Future] = []
-        for client_key, cb_name in self.topic_calls[topic]:
-            fut = self.clients[client_key].call(cb_name, message)
-            if fut.done():
-                exc = fut.exception()
-                if exc is not None:
-                    _logger.warning(
-                        f"{self.name}: immediate failure publishing "
-                        f"'{topic}' -> {cb_name} on {client_key}: "
-                        f"{exc}"
-                    )
-            futures.append(fut)
-        return futures
+        try:
+            self._publishers[topic].publish(message)
+        except Exception as exc:  # noqa: BLE001
+            fut: concurrent.futures.Future = concurrent.futures.Future()
+            fut.set_exception(exc)
+            return [fut]
+        n = len(self.network_config.get_publishers_for_node(self.name).get(topic, ()))
+        out: list[concurrent.futures.Future] = []
+        for _ in range(n):
+            f: concurrent.futures.Future = concurrent.futures.Future()
+            f.set_result(None)
+            out.append(f)
+        return out
 
     def shutdown(self) -> None:
-        """Shut the server and every outbound client down.
-
-        Unregisters the atexit hook up front so long-running processes
-        that create and destroy nodes dynamically don't accumulate
-        stale handlers in the atexit table.
-        """
+        """Tear the iceoryx2 publishers and subscriber threads down."""
         atexit.unregister(self.shutdown)
         _logger.info(f"{self.name}: shutting down")
-        try:
-            self.server.close()
-        except (OSError, RuntimeError) as exc:
-            _logger.warning(f"{self.name}: error closing server: {exc}")
-        for client in self.clients.values():
+        for sub in self._subscribers:
             try:
-                client.close()
-            except (OSError, RuntimeError) as exc:
-                _logger.warning(f"{self.name}: error closing client: {exc}")
+                sub.close()
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(f"{self.name}: subscriber close: {exc}")
+        self._subscribers.clear()
+        for pub in self._publishers.values():
+            try:
+                pub.close()
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(f"{self.name}: publisher close: {exc}")
+        self._publishers.clear()
+        self._iox_node = None
 
     def __enter__(self) -> TinyNode:
-        """Return self so ``with TinyNode(...) as node:`` works.
-
-        Returns:
-            The node itself, already started by :meth:`__init__`.
-        """
+        """Return self so ``with TinyNode(...) as node:`` works."""
         return self
 
     def __exit__(

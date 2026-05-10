@@ -1,26 +1,17 @@
-"""TinyROS transport: minimal RPC wire between nodes."""
+"""TinyROS transport: iceoryx2-backed pub/sub.
+
+Public surface is the exception hierarchy in :mod:`._errors`. Node
+plumbing (``_Publisher``, ``_Subscriber``, ``make_node``) lives in
+:mod:`._iox` and is used directly by :mod:`tinyros.node` -- it is not
+part of the public API.
+"""
 
 from __future__ import annotations
 
-from ._client import TinyClient
-
-# Private symbols re-exported for tests and advanced users; they are
-# not part of the public API and may change without notice.
-from ._common import _MSG_CALL_LARGE  # noqa: F401
 from ._errors import ConnectionLost, SerializationError, TransportError
-from ._framing import (  # noqa: F401
-    _frame,
-    _pack_call_large,
-    _pack_oob,
-    _recvall,
-    _unpack_oob,
-)
-from ._server import TinyServer
 
 __all__ = [
     "ConnectionLost",
     "SerializationError",
-    "TinyClient",
-    "TinyServer",
     "TransportError",
 ]

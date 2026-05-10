@@ -136,8 +136,8 @@ def test_subscribers_for_node_walks_all_publishers() -> None:
     cfg = TinyNetworkConfig.load_from_config(_RAW_CONFIG)
     subs = cfg.get_subscribers_for_node("A")
     assert subs == {
-        "t_b": "on_b_for_a",
-    }, f"A subscribes only to t_b via on_b_for_a, got {subs}"
+        "t_b": ("B", "on_b_for_a"),
+    }, f"A subscribes only to t_b via B.on_b_for_a, got {subs}"
 
 
 def test_subscribers_for_node_empty_when_no_inbound() -> None:

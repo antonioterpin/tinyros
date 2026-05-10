@@ -800,6 +800,17 @@ wheels = [
 ]
 
 [[package]]
+name = "iceoryx2"
+version = "0.8.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f6/58/c0d8dfd3be8b70a674564f979e53e966f33c74e50ea69175ec35ab951d17/iceoryx2-0.8.1.tar.gz", hash = "sha256:2d2ae65e013d285ee087fda97ec45bddb26b3e344d501365eb83b8cead229445", size = 818783, upload-time = "2026-01-16T17:19:49.23Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/0e/4060ecaabbbf9a0b802569ea4370a0cfda119eab394c700c9e5f4f7a2339/iceoryx2-0.8.1-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:cd2727a30579e51e02e908df1f0543f926ba29a57c016b4bb2091cc06cbdf086", size = 1204777, upload-time = "2026-01-16T17:19:44.126Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/42/e396d7422513c2b036f734fb0970e899b39d835ccdee5afeb034e70ea073/iceoryx2-0.8.1-cp38-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:5ddf6ae96da21c01a86c93ad3dc21dce5f4b8801b31c053395d2441df392648f", size = 1433570, upload-time = "2026-01-16T17:19:45.856Z" },
+    { url = "https://files.pythonhosted.org/packages/36/b1/7428087e014da39fb033f27bbf01f0cc86341f6ec7f0fc67ffe5b50774b8/iceoryx2-0.8.1-cp38-abi3-win_amd64.whl", hash = "sha256:0d8dd708d1c076dff822e158c3b34e3ee561c81b3f91fa89eef90f6c67ba31c9", size = 1299170, upload-time = "2026-01-16T17:19:47.591Z" },
+]
+
+[[package]]
 name = "id"
 version = "1.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3090,6 +3101,7 @@ name = "tinyros"
 version = "0.4.2"
 source = { editable = "." }
 dependencies = [
+    { name = "iceoryx2" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pyyaml" },
@@ -3120,6 +3132,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "iceoryx2", specifier = ">=0.8.0" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "robo-goggles", marker = "extra == 'logging'", git = "https://github.com/antonioterpin/goggles.git?branch=dev" },
