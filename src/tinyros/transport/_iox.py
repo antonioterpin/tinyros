@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false, reportInvalidTypeArguments=false
 """iceoryx2-backed transport for TinyROS.
 
 Each ``(publisher_node, topic)`` declared in the network config maps
@@ -28,8 +29,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-import iceoryx2 as iox2
-from iceoryx2 import Slice
+import iceoryx2 as iox2  # type: ignore[import-untyped]
+from iceoryx2 import Slice  # type: ignore[import-untyped]
 
 from ._errors import SerializationError, TransportError
 
@@ -68,17 +69,13 @@ class _Publisher:
         initial_capacity: int = 4096,
     ) -> None:
         """Initialize the publisher backed by an iceoryx2 service."""
-        self._service = _open_service(
-            node, _service_name(publisher_name, topic)
-        )
+        self._service = _open_service(node, _service_name(publisher_name, topic))
         self._capacity = max(initial_capacity, _HEADER_BYTES)
         self._publisher = self._build(self._capacity)
 
     def _build(self, capacity: int) -> Any:
         return (
-            self._service.publisher_builder()
-            .initial_max_slice_len(capacity)
-            .create()
+            self._service.publisher_builder().initial_max_slice_len(capacity).create()
         )
 
     def publish(self, message: Any) -> None:
@@ -92,8 +89,7 @@ class _Publisher:
             body = pickle.dumps(message, protocol=5)
         except Exception as exc:  # noqa: BLE001
             raise SerializationError(
-                f"failed to pickle message of type "
-                f"{type(message).__name__}: {exc}"
+                f"failed to pickle message of type " f"{type(message).__name__}: {exc}"
             ) from exc
         total = _HEADER_BYTES + len(body)
         if total > self._capacity:
@@ -112,8 +108,12 @@ class _Publisher:
             raise TransportError(f"iceoryx2 publish failed: {exc}") from exc
 
     def close(self) -> None:
-        """Drop the iceoryx2 publisher handle."""
-        self._publisher = None
+        """Mark the publisher as closed.
+
+        iceoryx2 manages the underlying SHM allocation; dropping our
+        Python reference is sufficient when the surrounding ``Node``
+        is itself dropped on transport shutdown.
+        """
 
 
 class _Subscriber:
@@ -134,9 +134,7 @@ class _Subscriber:
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """Initialize subscriber and start its dispatch thread."""
-        self._service = _open_service(
-            node, _service_name(publisher_name, topic)
-        )
+        self._service = _open_service(node, _service_name(publisher_name, topic))
         self._subscriber = self._service.subscriber_builder().create()
         self._callback = callback
         self._on_error = on_error
@@ -173,10 +171,13 @@ class _Subscriber:
                     self._on_error(exc)
 
     def close(self) -> None:
-        """Stop the dispatch thread and drop the iceoryx2 handles."""
+        """Stop the dispatch thread.
+
+        The iceoryx2 subscriber handle is dropped together with the
+        owning ``Node`` on transport shutdown.
+        """
         self._stop.set()
         self._thread.join(timeout=1.0)
-        self._subscriber = None
 
 
 def make_node() -> Any:

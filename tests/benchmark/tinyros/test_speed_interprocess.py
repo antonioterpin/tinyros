@@ -244,7 +244,7 @@ def _subscriber_entry(
         stop_evt: When set, the subscriber shuts down and exits.
     """
     cfg = _make_network(cfg_dict["pub_port"], cfg_dict["sub_port"])
-    sub = _BenchSub(name="sub", network_config=cfg, bind_host="127.0.0.1")
+    sub = _BenchSub(name="sub", network_config=cfg)
     ready_evt.set()
     try:
         stop_evt.wait()
@@ -399,7 +399,6 @@ def _run_case(
     pub = TinyNode(
         "pub",
         _make_network(pub_port, sub_port),
-        bind_host="127.0.0.1",
     )
     delivered = 0
     try:

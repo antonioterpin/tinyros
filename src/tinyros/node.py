@@ -338,7 +338,6 @@ class TinyNode:
             except Exception as exc:  # noqa: BLE001
                 _logger.warning(f"{self.name}: publisher close: {exc}")
         self._publishers.clear()
-        self._iox_node = None
 
     def __enter__(self) -> TinyNode:
         """Return self so ``with TinyNode(...) as node:`` works."""

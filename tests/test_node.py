@@ -165,5 +165,5 @@ def test_context_manager_shuts_down_on_exit() -> None:
     """``with TinyNode(...) as n:`` tears the node down on block exit."""
     cfg = _make_config(_unique_topic())
     with _Recorder("sub_a", cfg) as node:
-        assert node._iox_node is not None
-    assert node._iox_node is None
+        assert node._subscribers, "subscriber should be live inside the block"
+    assert node._subscribers == [], "shutdown must drop the subscribers"
