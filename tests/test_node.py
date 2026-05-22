@@ -497,6 +497,91 @@ def test_cyclic_topology_starts_without_deadlock(
                 wait_port_free(p)
 
 
+def test_publisher_created_before_subscriber_waits_and_connects(
+    three_free_ports: list[int],
+) -> None:
+    """A publisher built before its subscribers must wait, not fail.
+
+    Node creation order is not constrained: an operator may start the
+    publisher process before the subscriber processes are up. The
+    publisher dials its peers in ``TinyClient.__init__`` which retries
+    the connect for up to ``_CONNECT_TIMEOUT_S`` (10 s). This test
+    builds ``pub`` in a background thread while no subscriber exists,
+    holds that gap open for ``gap`` seconds -- long enough that a
+    broken or zero retry budget would have already raised
+    ``ConnectionLost`` -- then brings the subscribers up and asserts:
+
+    1. ``pub.__init__`` completed (the spawn thread is no longer alive),
+    2. it actually spent ~``gap`` seconds blocked in the retry loop
+       rather than returning early, and
+    3. a publish round-trips to both subscribers afterwards.
+
+    Without this, every other test creates subscribers first, so the
+    connect-retry path that makes creation order irrelevant is never
+    exercised; a regression shrinking the retry budget would pass CI.
+    """
+    cfg = _make_config(_ports(three_free_ports))
+
+    gap = 1.5  # well under the 10 s connect budget, long enough to prove retry
+
+    result: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def _build_pub() -> None:
+        start = time.monotonic()
+        try:
+            built = TinyNode("pub", cfg, bind_host="127.0.0.1")
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+            return
+        result["pub"] = built
+        result["elapsed"] = time.monotonic() - start
+
+    spawn = threading.Thread(target=_build_pub, name="spawn-pub")
+    spawn.start()
+
+    # Hold the publisher in its connect-retry loop with no peer to reach.
+    time.sleep(gap)
+    sub_a = _Recorder("sub_a", cfg)
+    sub_b = _Recorder("sub_b", cfg)
+
+    # Generous join: the publisher should connect almost immediately once
+    # the subscribers bind, but allow slack for slow CI scheduling.
+    spawn.join(timeout=10.0)
+
+    try:
+        assert not spawn.is_alive(), (
+            "pub.__init__ did not complete after subscribers came up; "
+            "the connect-retry loop appears stuck"
+        )
+        assert not errors, (
+            f"pub built before its subscribers must wait, not raise; " f"got {errors!r}"
+        )
+        assert "pub" in result, "publisher was never built"
+        elapsed = result["elapsed"]
+        assert isinstance(elapsed, float) and elapsed >= gap, (
+            f"pub.__init__ should have blocked through the ~{gap}s gap "
+            f"retrying the connect; it returned after {elapsed!r}s, which "
+            f"means it did not actually wait for the subscribers"
+        )
+
+        pub = result["pub"]
+        assert isinstance(pub, TinyNode)
+        time.sleep(0.2)  # let the freshly accepted connections settle
+        futures = pub.publish("topic", 99)
+        assert [f.result(timeout=2.0) for f in futures] == ["ack", "ack"]
+        assert sub_a.received == [99], sub_a.received
+        assert sub_b.received == [99], sub_b.received
+    finally:
+        pub_obj = result.get("pub")
+        if isinstance(pub_obj, TinyNode):
+            pub_obj.shutdown()
+        sub_a.shutdown()
+        sub_b.shutdown()
+        for p in three_free_ports:
+            wait_port_free(p)
+
+
 def test_context_manager_shuts_down_on_exit(
     three_free_ports: list[int],
 ) -> None:
