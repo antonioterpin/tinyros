@@ -57,7 +57,9 @@ def _port_is_free(port: int, host: str = "127.0.0.1") -> bool:
         return sock.connect_ex((host, port)) != 0
 
 
-def wait_port_free(port: int, host: str = "127.0.0.1", timeout: float = 2.0) -> None:
+def wait_port_free(
+    port: int, host: str = "127.0.0.1", timeout: float = 2.0
+) -> None:
     """Block until ``(host, port)`` stops accepting connections.
 
     Args:
@@ -73,4 +75,6 @@ def wait_port_free(port: int, host: str = "127.0.0.1", timeout: float = 2.0) -> 
         if _port_is_free(port, host):
             return
         time.sleep(0.01)
-    raise AssertionError(f"port {port} on {host} still open after {timeout:.1f}s")
+    raise AssertionError(
+        f"port {port} on {host} still open after {timeout:.1f}s"
+    )

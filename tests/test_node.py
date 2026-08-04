@@ -102,7 +102,7 @@ def three_free_ports(free_port: int) -> list[int]:
         Three distinct ports currently unoccupied on the loopback interface.
     """
     # Reuse the free_port fixture once; compute two more independently.
-    import socket  # noqa: PLC0415
+    import socket
 
     ports = [free_port]
     while len(ports) < 3:
@@ -179,7 +179,8 @@ def test_publish_unknown_topic_is_noop(three_free_ports: list[int]) -> None:
         time.sleep(0.1)
         futures = pub.publish("does-not-exist", 1)
         assert futures == [], (
-            f"publishing an unknown topic should yield no futures; " f"got {futures}"
+            f"publishing an unknown topic should yield no futures; "
+            f"got {futures}"
         )
         assert sub_a.received == [], "sub_a should not have received anything"
         assert sub_b.received == [], "sub_b should not have received anything"
@@ -218,7 +219,7 @@ def test_is_loopback_host(host: str, expected: bool) -> None:
     returning True would hide that the transport can't actually honor
     it.
     """
-    from tinyros.node import _is_loopback_host  # noqa: PLC0415
+    from tinyros.node import _is_loopback_host
 
     actual = _is_loopback_host(host)
     assert (
@@ -328,7 +329,7 @@ def test_init_distinguishes_missing_from_none_shadow(
     cfg = _make_config(_ports(three_free_ports))
     sub_port = three_free_ports[1]
     try:
-        with pytest.raises(ValueError, match="NoneType.*not callable"):
+        with pytest.raises(ValueError, match=r"NoneType.*not callable"):
             _NoneShadowedCallback("sub_a", cfg, bind_host="127.0.0.1")
     finally:
         wait_port_free(sub_port)
@@ -364,9 +365,12 @@ def test_callback_exception_surfaces_on_publisher_future(
                 results.append(fut.result(timeout=2.0))
             except ValueError as exc:
                 results.append(exc)
-        kinds = [type(r).__name__ if isinstance(r, Exception) else r for r in results]
+        kinds = [
+            type(r).__name__ if isinstance(r, Exception) else r for r in results
+        ]
         assert "ValueError" in kinds, (
-            f"one future must surface the subscriber's ValueError; " f"got {kinds}"
+            f"one future must surface the subscriber's ValueError; "
+            f"got {kinds}"
         )
         assert "ack" in kinds, (
             f"the other subscriber must still ack normally; " f"got {kinds}"
@@ -457,7 +461,7 @@ def test_cyclic_topology_starts_without_deadlock(
     def _spawn(name: str) -> None:
         try:
             built = _Pair(name, cfg)
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             with state_lock:
                 errors.append(exc)
             return
@@ -531,7 +535,7 @@ def test_publisher_created_before_subscriber_waits_and_connects(
         start = time.monotonic()
         try:
             built = TinyNode("pub", cfg, bind_host="127.0.0.1")
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             errors.append(exc)
             return
         result["pub"] = built
@@ -555,7 +559,8 @@ def test_publisher_created_before_subscriber_waits_and_connects(
             "the connect-retry loop appears stuck"
         )
         assert not errors, (
-            f"pub built before its subscribers must wait, not raise; " f"got {errors!r}"
+            f"pub built before its subscribers must wait, not raise; "
+            f"got {errors!r}"
         )
         assert "pub" in result, "publisher was never built"
         elapsed = result["elapsed"]

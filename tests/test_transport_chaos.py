@@ -68,7 +68,9 @@ def test_slow_callback_does_not_starve_pool(free_port: int) -> None:
         wait_port_free(free_port)
 
 
-def test_partial_header_disconnect_does_not_crash_server(free_port: int) -> None:
+def test_partial_header_disconnect_does_not_crash_server(
+    free_port: int,
+) -> None:
     """A client that closes its TCP socket mid-header must not crash the server.
 
     Open a raw socket, send half a frame header, then orderly-close.
@@ -91,7 +93,9 @@ def test_partial_header_disconnect_does_not_crash_server(free_port: int) -> None
         time.sleep(1.5)
 
         # Legitimate client still works after the bad peer is dropped.
-        good = TinyClient(host="127.0.0.1", port=free_port, name="t-chaos-good-cli")
+        good = TinyClient(
+            host="127.0.0.1", port=free_port, name="t-chaos-good-cli"
+        )
         try:
             assert good.call("noop", 7).result(timeout=2.0) == 7
         finally:
@@ -101,7 +105,9 @@ def test_partial_header_disconnect_does_not_crash_server(free_port: int) -> None
         wait_port_free(free_port)
 
 
-def test_handler_crash_drops_conn_and_keeps_server_alive(free_port: int) -> None:
+def test_handler_crash_drops_conn_and_keeps_server_alive(
+    free_port: int,
+) -> None:
     """An unexpected handler crash must drop the conn but not the server.
 
     Patch ``_handle_frame`` to raise a non-:class:`SerializationError`.
@@ -113,16 +119,18 @@ def test_handler_crash_drops_conn_and_keeps_server_alive(free_port: int) -> None
     server.bind("noop", lambda x: x)
     server.start(block=False)
 
-    original_handle = server._handle_frame  # noqa: SLF001
+    original_handle = server._handle_frame
     crashed = threading.Event()
 
     def crashing_handle(*_args: object, **_kwargs: object) -> None:
         crashed.set()
         raise RuntimeError("synthetic handler bug")
 
-    server._handle_frame = crashing_handle  # type: ignore[method-assign]  # noqa: SLF001
+    server._handle_frame = crashing_handle  # type: ignore[method-assign]
 
-    client = TinyClient(host="127.0.0.1", port=free_port, name="t-chaos-crash-cli")
+    client = TinyClient(
+        host="127.0.0.1", port=free_port, name="t-chaos-crash-cli"
+    )
     try:
         fut = client.call("noop", 1)
         with pytest.raises(ConnectionError):
@@ -131,14 +139,16 @@ def test_handler_crash_drops_conn_and_keeps_server_alive(free_port: int) -> None
         client.close(timeout=1.0)
 
         # Restore the real handler and verify the server still serves.
-        server._handle_frame = original_handle  # type: ignore[method-assign]  # noqa: SLF001
-        good = TinyClient(host="127.0.0.1", port=free_port, name="t-chaos-after-cli")
+        server._handle_frame = original_handle  # type: ignore[method-assign]
+        good = TinyClient(
+            host="127.0.0.1", port=free_port, name="t-chaos-after-cli"
+        )
         try:
             assert good.call("noop", 9).result(timeout=2.0) == 9
         finally:
             good.close(timeout=1.0)
     finally:
-        server._handle_frame = original_handle  # type: ignore[method-assign]  # noqa: SLF001
+        server._handle_frame = original_handle  # type: ignore[method-assign]
         server.close(timeout=1.0)
         wait_port_free(free_port)
 
@@ -170,7 +180,9 @@ def test_oversized_frame_drops_connection(free_port: int) -> None:
         raw.close()
 
         # Fresh client still works after the bad peer is dropped.
-        good = TinyClient(host="127.0.0.1", port=free_port, name="t-chaos-after-cli")
+        good = TinyClient(
+            host="127.0.0.1", port=free_port, name="t-chaos-after-cli"
+        )
         try:
             assert good.call("noop", 42).result(timeout=2.0) == 42
         finally:

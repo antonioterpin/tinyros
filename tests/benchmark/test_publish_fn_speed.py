@@ -22,7 +22,7 @@ portal = pytest.importorskip(
     reason="Install the `[portal]` extra to run the portal-based benchmark.",
 )
 
-from tinyros import TinyNetworkConfig, TinyNode  # noqa: E402
+from tinyros import TinyNetworkConfig, TinyNode
 
 logger = gg.get_logger(
     "tinyros.benchmark",
@@ -139,7 +139,9 @@ class FastPublisher(TinyNode):
         logger.info("\n\n")
         logger.info("=== Publish Latency Statistics ===")
         logger.info(f"Total measurements: {len(times)}")
-        logger.info(f"Total time: {(time.perf_counter() - start_time):.2f} seconds")
+        logger.info(
+            f"Total time: {(time.perf_counter() - start_time):.2f} seconds"
+        )
 
         if len(times) > 0:
             min_latency = min(times)
@@ -169,12 +171,17 @@ class FastPublisher(TinyNode):
             logger.info("=== Latency Range Distribution ===")
             for i, threshold in enumerate(LATENCY_RANGES):
                 if i == 0:
-                    logger.info(f"  < {threshold:.3f} ms: {latency_counters[i]}")
+                    logger.info(
+                        f"  < {threshold:.3f} ms: {latency_counters[i]}"
+                    )
                 else:
                     logger.info(
-                        f"  [{LATENCY_RANGES[i-1]:.3f}, {threshold:.3f}) ms: {latency_counters[i]}"
+                        f"  [{LATENCY_RANGES[i - 1]:.3f}, {threshold:.3f}) ms: "
+                        f"{latency_counters[i]}"
                     )
-            logger.info(f"  >= {LATENCY_RANGES[-1]:.3f} ms: {latency_counters[-1]}")
+            logger.info(
+                f"  >= {LATENCY_RANGES[-1]:.3f} ms: {latency_counters[-1]}"
+            )
 
         return times
 
@@ -221,7 +228,9 @@ def main(*, num_msgs: int, sleep_ms: float, delay: float = 0.0) -> list[float]:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="TinyROS communication benchmark")
+    parser = argparse.ArgumentParser(
+        description="TinyROS communication benchmark"
+    )
     parser.add_argument(
         "--num-msgs",
         type=int,

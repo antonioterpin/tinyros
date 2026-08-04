@@ -94,7 +94,12 @@ markers = [
   "run_explicitly: marks tests that must be run explicitly (e.g. benchmarks)",
 ]
 
-# Ruff is the single source of truth for linting and formatting rules.
+# Black owns formatting, ruff owns lint rules. Their line lengths must
+# agree or black reflows to a width ruff then reports as E501.
+[tool.black]
+line-length = 80
+target-version = ["py310"]
+
 [tool.ruff]
 line-length = 80
 target-version = "py310"
@@ -109,6 +114,7 @@ select = [
     "I",      # isort
     "N",      # pep8-naming
     "D",      # pydocstyle
+    "PD",     # pandas-vet
     "PL",     # pylint
     "RUF",    # ruff-specific rules
 ]
@@ -122,9 +128,21 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["PLR2004", "D"]  # Allow magic values and relaxed docstrings in tests
+# Magic values and relaxed docstrings are fine in tests. Imports inside a
+# test body are deliberate: they defer import timing or reach a private
+# symbol the module-level surface does not expose.
+"tests/**" = ["PLR2004", "D", "PLC0415"]
 "main.py" = ["D"]             # example script
-"tests/benchmark/ros2/*" = ["ALL"]  # external ROS2 comparison code
+"tests/benchmark/ros2/**" = ["ALL"]  # external ROS2 comparison code
+# Benchmarks import after `pytest.importorskip` gates the optional extra,
+# and their measurement sweeps are long linear functions by nature.
+"tests/benchmark/**" = ["E402", "PLR0912", "PLR0915"]
+# Private wire-format helpers are re-exported for tests and advanced
+# users, deliberately kept out of `__all__`.
+"src/tinyros/transport/__init__.py" = ["F401"]
+# `ConnectionLost` is exported from the package root, so adding the N818
+# `Error` suffix would be a breaking rename of published API.
+"src/tinyros/transport/_errors.py" = ["N818"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

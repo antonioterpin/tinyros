@@ -311,7 +311,9 @@ class TinyNode:
 
     def _setup_publishing(self) -> None:
         """Open clients to each peer this node publishes to."""
-        published_topics = self.network_config.get_publishers_for_node(self.name)
+        published_topics = self.network_config.get_publishers_for_node(
+            self.name
+        )
         for topic_name, subscriptions in published_topics.items():
             self.topic_calls[topic_name] = []
             for subscription in subscriptions:
@@ -325,7 +327,9 @@ class TinyNode:
                         port=subscriber_node.port,
                         name=f"{self.name} -> {subscription.actor}",
                     )
-                self.topic_calls[topic_name].append((client_key, subscription.cb_name))
+                self.topic_calls[topic_name].append(
+                    (client_key, subscription.cb_name)
+                )
         _logger.info(
             f"{self.name}: publishing topics "
             f"{list(self.topic_calls.keys())} via {len(self.clients)} "
@@ -342,7 +346,9 @@ class TinyNode:
                 ``network_config.yaml`` cannot silently leave a
                 subscription unhandled at runtime.
         """
-        subscribed_topics = self.network_config.get_subscribers_for_node(self.name)
+        subscribed_topics = self.network_config.get_subscribers_for_node(
+            self.name
+        )
         # Sentinel so we distinguish "attribute is missing" from
         # "attribute exists but the subclass shadowed it with None"
         # (e.g., ``some_cb = None`` as a placeholder). Using ``None``
@@ -366,10 +372,13 @@ class TinyNode:
                 )
             self.server.bind(callback_name, attr)
             _logger.info(
-                f"{self.name}: bound '{callback_name}' " f"for topic '{topic_name}'"
+                f"{self.name}: bound '{callback_name}' "
+                f"for topic '{topic_name}'"
             )
 
-    def publish(self, topic: str, message: Any) -> list[concurrent.futures.Future]:
+    def publish(
+        self, topic: str, message: Any
+    ) -> list[concurrent.futures.Future]:
         """Publish ``message`` to every subscriber of ``topic``.
 
         Never raises synchronously. :meth:`TinyClient.call` always

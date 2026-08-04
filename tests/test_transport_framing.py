@@ -31,7 +31,9 @@ from tinyros.transport import _pack_oob, _recvall, _unpack_oob
 def test_small_scalars_roundtrip(payload: object) -> None:
     """Scalars and containers survive encode/decode unchanged."""
     decoded = _unpack_oob(_pack_oob(payload))
-    assert decoded == payload, f"expected {payload!r} after roundtrip, got {decoded!r}"
+    assert (
+        decoded == payload
+    ), f"expected {payload!r} after roundtrip, got {decoded!r}"
 
 
 @pytest.mark.parametrize(
@@ -43,7 +45,9 @@ def test_small_scalars_roundtrip(payload: object) -> None:
         ((0,), np.uint8),
     ],
 )
-def test_ndarray_roundtrip(shape: tuple[int, ...], dtype: type[np.generic]) -> None:
+def test_ndarray_roundtrip(
+    shape: tuple[int, ...], dtype: type[np.generic]
+) -> None:
     """ndarrays survive the oob path with shape, dtype, and content intact."""
     rng = np.random.default_rng(0)
     arr = rng.integers(-5, 5, size=shape).astype(dtype)

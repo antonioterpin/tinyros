@@ -13,26 +13,12 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.1
     hooks:
-      - id: ruff
+      # Rule selection, line length and doc-line length all come from
+      # [tool.ruff.lint] in pyproject.toml. Passing no --select here keeps
+      # `uv run ruff check` by hand identical to what CI enforces.
+      - id: ruff-check
         stages: [pre-commit, pre-push]
-        args:
-          [
-            "--fix",
-            "--line-length=80",
-            "--config=lint.pycodestyle.max-doc-length=80",
-            # Docstring & pandas rules; D includes D419 so this is enough.
-            # W505 enforces 80-col limit on docstrings/comments too.
-            "--select=D,PD,W505",
-          ]
-      - id: ruff
-        name: ruff-typing-modernizer
-        stages: [pre-commit, pre-push]
-        args:
-          [
-            "--fix",
-            "--select=UP,F401,F811,I",
-            "--line-length=80",
-          ]
+        args: ["--fix"]
 
   - repo: https://github.com/asottile/pyupgrade
     rev: v3.19.0

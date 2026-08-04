@@ -71,7 +71,9 @@ def test_transport_error_is_an_exception() -> None:
     )
 
 
-def test_unpicklable_arg_surfaces_as_serialization_error(free_port: int) -> None:
+def test_unpicklable_arg_surfaces_as_serialization_error(
+    free_port: int,
+) -> None:
     """Sending a non-picklable arg fails the future with SerializationError."""
     server = TinyServer(name="t-srv", host="127.0.0.1", port=free_port)
     server.bind("noop", lambda x: x)
