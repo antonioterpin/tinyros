@@ -51,10 +51,13 @@ class ScalarPublisher(TinyNode):
         counter = 0
         try:
             while True:
-                scalar_value = np.sin(counter * 0.1) * 100 + np.random.normal(0, 5)
+                scalar_value = np.sin(counter * 0.1) * 100 + np.random.normal(
+                    0, 5
+                )
                 self.publish("scalar_data", float(scalar_value))
                 _logger.info(
-                    f"ScalarPublisher: published scalar = " f"{scalar_value:.2f}"
+                    f"ScalarPublisher: published scalar = "
+                    f"{scalar_value:.2f}"
                 )
                 counter += 1
                 time.sleep(sleep_time)
@@ -78,8 +81,12 @@ class ImagePublisher(TinyNode):
         try:
             while True:
                 image = np.random.randint(0, 255, (16, 16, 2), dtype=np.uint8)
-                image[:, :, 0] = (np.sin(counter * 0.1) * 127 + 128).astype(np.uint8)
-                image[:, :, 1] = (np.cos(counter * 0.1) * 127 + 128).astype(np.uint8)
+                image[:, :, 0] = (np.sin(counter * 0.1) * 127 + 128).astype(
+                    np.uint8
+                )
+                image[:, :, 1] = (np.cos(counter * 0.1) * 127 + 128).astype(
+                    np.uint8
+                )
                 self.publish("image_data", image)
                 _logger.info(
                     f"ImagePublisher: published image {image.shape}, "
@@ -122,7 +129,8 @@ class ControlProcessor(TinyNode):
         image = np.array(data)
         self.latest_image_sum = float(np.sum(image))
         _logger.info(
-            f"ControlProcessor: received image sum = " f"{self.latest_image_sum:.0f}"
+            f"ControlProcessor: received image sum = "
+            f"{self.latest_image_sum:.0f}"
         )
 
     def on_feedback_data(self, data: float) -> None:
@@ -133,7 +141,8 @@ class ControlProcessor(TinyNode):
         """
         self.latest_feedback = data
         _logger.info(
-            f"ControlProcessor: received feedback = " f"{self.latest_feedback:.2f}"
+            f"ControlProcessor: received feedback = "
+            f"{self.latest_feedback:.2f}"
         )
 
     def run(self) -> None:
@@ -157,7 +166,9 @@ class FeedbackProcessor(TinyNode):
 
     def __init__(self) -> None:
         """Initialize the FeedbackProcessor."""
-        super().__init__(name="FeedbackProcessor", network_config=NETWORK_CONFIG)
+        super().__init__(
+            name="FeedbackProcessor", network_config=NETWORK_CONFIG
+        )
         _logger.info(f"FeedbackProcessor: initialized on port {self.port}")
 
     def on_actuation_command(self, data: float) -> None:
@@ -170,7 +181,8 @@ class FeedbackProcessor(TinyNode):
         feedback_value = actuation_value * 0.95 + np.random.normal(0, 2)
         self.publish("actuation_feedback", float(feedback_value))
         _logger.info(
-            f"actuation = {actuation_value:.2f} -> " f"feedback = {feedback_value:.2f}"
+            f"actuation = {actuation_value:.2f} -> "
+            f"feedback = {feedback_value:.2f}"
         )
 
     def run(self) -> None:

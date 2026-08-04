@@ -6,9 +6,9 @@ from ._client import TinyClient
 
 # Private symbols re-exported for tests and advanced users; they are
 # not part of the public API and may change without notice.
-from ._common import _MSG_CALL_LARGE  # noqa: F401
+from ._common import _MSG_CALL_LARGE
 from ._errors import ConnectionLost, SerializationError, TransportError
-from ._framing import (  # noqa: F401
+from ._framing import (
     _frame,
     _pack_call_large,
     _pack_oob,

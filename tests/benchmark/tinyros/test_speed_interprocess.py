@@ -149,7 +149,9 @@ def _build_bytes(i: int, n_bytes: int) -> bytes:
     return prefix + (b"x" * pad)
 
 
-def _build_ndarray(i: int, shape: tuple[int, ...], dtype: np.dtype) -> np.ndarray:
+def _build_ndarray(
+    i: int, shape: tuple[int, ...], dtype: np.dtype
+) -> np.ndarray:
     """Build a zero ndarray with ``flat[0] = i``.
 
     Args:
@@ -264,7 +266,7 @@ def _percentile(values: list[float], q: float) -> float:
     """
     if not values:
         return 0.0
-    k = max(0, min(len(values) - 1, int(round(q * (len(values) - 1)))))
+    k = max(0, min(len(values) - 1, round(q * (len(values) - 1))))
     return sorted(values)[k]
 
 
@@ -431,7 +433,8 @@ def _run_case(
                 got_idx == i
             ), f"[{label}] step {step}: expected idx {i}, got {got_idx}"
             assert got_count == i + 1, (
-                f"[{label}] step {step}: expected count {i + 1}, " f"got {got_count}"
+                f"[{label}] step {step}: expected count {i + 1}, "
+                f"got {got_count}"
             )
             delivered += 1
             if SLEEP_BETWEEN_ITERS_S > 0:
@@ -517,4 +520,6 @@ def test_interprocess_latency_matrix() -> None:
             delivered == REPETITIONS
         ), f"[{label}] delivery mismatch: got {delivered}/{REPETITIONS}"
     _save_csv(rows, CSV_DIR / "interprocess_latency.csv")
-    assert len(rows) == len(_PAYLOADS), f"expected one row per payload, got {len(rows)}"
+    assert len(rows) == len(
+        _PAYLOADS
+    ), f"expected one row per payload, got {len(rows)}"

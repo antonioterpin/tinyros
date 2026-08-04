@@ -328,7 +328,9 @@ class TinyServer:
         finally:
             self._drop_conn(conn)
 
-    def _handle_frame(self, conn: socket.socket, kind: int, body: bytes) -> None:
+    def _handle_frame(
+        self, conn: socket.socket, kind: int, body: bytes
+    ) -> None:
         """Dispatch a decoded frame to the right handler path.
 
         ``CALL_LARGE`` materialization (shm open, memcpy, unlink) is
@@ -392,7 +394,9 @@ class TinyServer:
             # silently and got conflated with deserialization failures
             # at the reader loop's catch-site.
             self._pool_semaphore.release()
-            _logger.exception(f"{self.name}: unexpected error submitting work to pool")
+            _logger.exception(
+                f"{self.name}: unexpected error submitting work to pool"
+            )
             raise
         fut.add_done_callback(lambda _f: self._pool_semaphore.release())
 
@@ -494,7 +498,9 @@ class TinyServer:
         fn = self._callbacks.get(call.cb_name)
         if fn is None:
             ok = False
-            result = AttributeError(f"{self.name}: no callback named {call.cb_name!r}")
+            result = AttributeError(
+                f"{self.name}: no callback named {call.cb_name!r}"
+            )
         else:
             try:
                 result = fn(call.arg)

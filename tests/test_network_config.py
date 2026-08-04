@@ -144,4 +144,6 @@ def test_subscribers_for_node_empty_when_no_inbound() -> None:
     """A node declared with no subscriptions yields an empty dict."""
     cfg = TinyNetworkConfig.load_from_config(_RAW_CONFIG)
     subs = cfg.get_subscribers_for_node("D")
-    assert subs == {}, "D has no subscriptions; subscription map should be empty"
+    assert (
+        subs == {}
+    ), "D has no subscriptions; subscription map should be empty"

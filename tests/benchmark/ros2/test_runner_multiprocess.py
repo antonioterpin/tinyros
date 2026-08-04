@@ -288,5 +288,7 @@ if __name__ == "__main__":
     for pub_hw in PUB_HWS:
         for sub_hw in SUB_HWS:
             for shape in SHAPES:
-                print(f"Running ROS2 MP latency: {pub_hw} -> {sub_hw}, shape={shape}")
+                print(
+                    f"Running ROS2 MP latency: {pub_hw} -> {sub_hw}, shape={shape}"
+                )
                 run_once_mp(shape=shape, pub_hw=pub_hw, sub_hw=sub_hw)

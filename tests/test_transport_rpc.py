@@ -46,7 +46,9 @@ def server_client_pair(
     """
     resources: list[tuple[TinyServer, TinyClient]] = []
 
-    def _make(**bindings: Callable[..., Any]) -> tuple[TinyServer, TinyClient, int]:
+    def _make(
+        **bindings: Callable[..., Any],
+    ) -> tuple[TinyServer, TinyClient, int]:
         server = TinyServer(name="t-srv", host="127.0.0.1", port=free_port)
         for cb_name, fn in bindings.items():
             server.bind(cb_name, fn)
@@ -124,8 +126,12 @@ def test_noncontiguous_view_roundtrips_via_shm(
     # so the view alone is enough to trigger the shm path.
     base = np.arange(1024 * 1024, dtype=np.float32).reshape(1024, 1024)
     view = base[::2, ::2]
-    assert not view.flags["C_CONTIGUOUS"], "view must be non-contiguous for this test"
-    assert view.nbytes < base.nbytes, "view.nbytes should reflect the logical extent"
+    assert not view.flags[
+        "C_CONTIGUOUS"
+    ], "view must be non-contiguous for this test"
+    assert (
+        view.nbytes < base.nbytes
+    ), "view.nbytes should reflect the logical extent"
 
     fut = client.call("echo_arr", view)
     received = fut.result(timeout=3.0)
@@ -133,8 +139,12 @@ def test_noncontiguous_view_roundtrips_via_shm(
     assert isinstance(
         received, np.ndarray
     ), f"expected ndarray, got {type(received).__name__}"
-    assert received.shape == view.shape, f"shape: {received.shape!r} vs {view.shape!r}"
-    assert received.dtype == view.dtype, f"dtype: {received.dtype!r} vs {view.dtype!r}"
+    assert (
+        received.shape == view.shape
+    ), f"shape: {received.shape!r} vs {view.shape!r}"
+    assert (
+        received.dtype == view.dtype
+    ), f"dtype: {received.dtype!r} vs {view.dtype!r}"
     assert np.array_equal(
         received, view
     ), "non-contiguous view should arrive with bit-identical values"
@@ -177,7 +187,8 @@ def test_unpicklable_exception_resolves_future(
     with pytest.raises(RuntimeError) as excinfo:
         fut.result(timeout=2.0)
     assert "not serializable" in str(excinfo.value), (
-        f"fallback message should mention the pickle failure; " f"got {excinfo.value!r}"
+        f"fallback message should mention the pickle failure; "
+        f"got {excinfo.value!r}"
     )
 
 
@@ -278,13 +289,17 @@ def test_server_bounded_inflight(free_port: int) -> None:
         futures = [client.call("slow", i) for i in range(10)]
         # Wait for the cap's worth of callbacks to actually be running.
         for _ in range(cap):
-            assert started.acquire(timeout=2.0), "server never started callbacks"
+            assert started.acquire(
+                timeout=2.0
+            ), "server never started callbacks"
         # Give the reader a moment to attempt more submissions; none
         # should sneak past the cap.
         time.sleep(0.3)
         with lock:
             peak = counter["peak"]
-        assert peak <= cap, f"peak in-flight should never exceed cap={cap}; got {peak}"
+        assert (
+            peak <= cap
+        ), f"peak in-flight should never exceed cap={cap}; got {peak}"
         release.set()
         for fut in futures:
             assert fut.result(timeout=5.0) == "ok"
@@ -364,25 +379,25 @@ def test_submit_call_survives_pool_shutdown(free_port: int) -> None:
     client = TinyClient(host="127.0.0.1", port=free_port, name="cli-shutdown")
     try:
         client.call("noop", 0).result(timeout=2.0)
-        server._pool.shutdown(wait=True, cancel_futures=True)  # noqa: SLF001
+        server._pool.shutdown(wait=True, cancel_futures=True)
         # With the pool down every new CALL will be dropped by the
         # server without raising; the reader must not crash the
         # connection. The client future will time out rather than
         # resolve, which is the expected trade -- we only assert the
         # reader stays healthy (the semaphore slot count and the conn
         # bookkeeping are the observable invariants).
-        starting_slots = server._pool_semaphore._value  # noqa: SLF001
+        starting_slots = server._pool_semaphore._value
         for i in range(5):
             _ = client.call("noop", i)
         time.sleep(0.2)
-        assert server._pool_semaphore._value == starting_slots, (  # noqa: SLF001
+        assert server._pool_semaphore._value == starting_slots, (
             "each dropped call must release its slot back to the "
             "semaphore so the server can still accept more frames"
         )
-        with server._conns_lock:  # noqa: SLF001
-            assert len(server._conns) == 1, (  # noqa: SLF001
+        with server._conns_lock:
+            assert len(server._conns) == 1, (
                 "submit RuntimeError must not drop the peer connection; "
-                f"still {len(server._conns)} connections tracked"  # noqa: SLF001
+                f"still {len(server._conns)} connections tracked"
             )
     finally:
         client.close(timeout=1.0)
@@ -444,17 +459,20 @@ def test_large_ndarray_goes_through_shm_path(
     arr = np.ones((256, 256), dtype=np.float32)  # 256 KiB >> 64 KiB
     fut = client.call("slow_echo", arr)
 
-    assert started.wait(timeout=2.0), "server should have received the CALL_LARGE frame"
+    assert started.wait(
+        timeout=2.0
+    ), "server should have received the CALL_LARGE frame"
     # While the callback is still running and the shm block has just
     # been consumed by the server, _pending_shm has been drained --
     # we instead prove the path was taken by sending a payload *below*
     # threshold and showing _pending_shm stays empty for it.
     small = np.ones((2, 2), dtype=np.float32)  # 16 B
     client.call("slow_echo", small)
-    with client._pending_shm_lock:  # noqa: SLF001
-        pending_small = set(client._pending_shm)  # noqa: SLF001
+    with client._pending_shm_lock:
+        pending_small = set(client._pending_shm)
     assert pending_small == set(), (
-        "inline CALL path should never populate _pending_shm; " f"got {pending_small}"
+        "inline CALL path should never populate _pending_shm; "
+        f"got {pending_small}"
     )
 
     release.set()
@@ -529,23 +547,21 @@ def test_server_conn_bookkeeping_shrinks_after_disconnect(
         # its side -- give it a moment to prune.
         deadline = time.monotonic() + 2.0
         while (
-            len(server._reader_threads) > 0  # noqa: SLF001
-            or len(server._conns) > 0  # noqa: SLF001
-            or len(server._conn_send_locks) > 0  # noqa: SLF001
+            len(server._reader_threads) > 0
+            or len(server._conns) > 0
+            or len(server._conn_send_locks) > 0
         ) and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert len(server._reader_threads) == 0, (  # noqa: SLF001
+        assert len(server._reader_threads) == 0, (
             f"reader thread map should be empty after {cycles} "
-            f"disconnects; got {len(server._reader_threads)}"  # noqa: SLF001
+            f"disconnects; got {len(server._reader_threads)}"
         )
         assert (
             len(server._conns) == 0
-        ), (  # noqa: SLF001
-            f"conn set should be empty; got {len(server._conns)}"  # noqa: SLF001
-        )
-        assert len(server._conn_send_locks) == 0, (  # noqa: SLF001
+        ), f"conn set should be empty; got {len(server._conns)}"
+        assert len(server._conn_send_locks) == 0, (
             f"send-lock map should be empty; "
-            f"got {len(server._conn_send_locks)}"  # noqa: SLF001
+            f"got {len(server._conn_send_locks)}"
         )
     finally:
         server.close(timeout=1.0)
@@ -571,7 +587,10 @@ def test_close_joins_readers_accepted_concurrently(free_port: int) -> None:
         while not stop.is_set():
             try:
                 c = TinyClient(
-                    host="127.0.0.1", port=free_port, name="hammer", connect_timeout=0.5
+                    host="127.0.0.1",
+                    port=free_port,
+                    name="hammer",
+                    connect_timeout=0.5,
                 )
             except OSError:
                 return
@@ -591,13 +610,13 @@ def test_close_joins_readers_accepted_concurrently(free_port: int) -> None:
         for t in hammers:
             t.join(timeout=2.0)
         wait_port_free(free_port)
-    assert len(server._reader_threads) == 0, (  # noqa: SLF001
+    assert len(server._reader_threads) == 0, (
         "close() should have joined and removed every reader thread, "
-        f"got {len(server._reader_threads)}"  # noqa: SLF001
+        f"got {len(server._reader_threads)}"
     )
     assert (
         len(server._conns) == 0
-    ), f"close() should have drained _conns, got {len(server._conns)}"  # noqa: SLF001
+    ), f"close() should have drained _conns, got {len(server._conns)}"
 
 
 def test_oversized_frame_header_drops_connection(free_port: int) -> None:
@@ -654,7 +673,10 @@ def test_client_reconnects_across_server_restart(free_port: int) -> None:
             recovered = False
             while time.monotonic() < deadline:
                 try:
-                    if client.call("echo", "after").result(timeout=1.0) == "after":
+                    if (
+                        client.call("echo", "after").result(timeout=1.0)
+                        == "after"
+                    ):
                         recovered = True
                         break
                 # Python 3.10 keeps concurrent.futures.TimeoutError distinct
@@ -663,7 +685,8 @@ def test_client_reconnects_across_server_restart(free_port: int) -> None:
                 except (ConnectionError, concurrent.futures.TimeoutError):
                     time.sleep(0.1)
             assert recovered, (
-                "client never reconnected to the new server within the " "5 s deadline"
+                "client never reconnected to the new server within the "
+                "5 s deadline"
             )
         finally:
             srv2.close(timeout=1.0)
@@ -692,18 +715,16 @@ def test_reconnect_releases_failed_frame_shm(free_port: int) -> None:
         reconnect_timeout=0.1,
     )
     try:
-        client._sock.shutdown(socket.SHUT_WR)  # noqa: SLF001
+        client._sock.shutdown(socket.SHUT_WR)
         arr = np.ones((256, 256), dtype=np.float32)  # 256 KiB >> 64 KiB
         fut = client.call("shape_of", arr)
         with pytest.raises(ConnectionError):
             fut.result(timeout=2.0)
         deadline = time.monotonic() + 2.0
-        while (
-            len(client._pending_shm) > 0 and time.monotonic() < deadline  # noqa: SLF001
-        ):
+        while len(client._pending_shm) > 0 and time.monotonic() < deadline:
             time.sleep(0.01)
-        with client._pending_shm_lock:  # noqa: SLF001
-            leftover = set(client._pending_shm)  # noqa: SLF001
+        with client._pending_shm_lock:
+            leftover = set(client._pending_shm)
         assert leftover == set(), (
             f"send failure must unlink the CALL_LARGE shm block; "
             f"still tracking {leftover}"
@@ -749,7 +770,7 @@ def test_reconnect_drops_pre_failure_queued_frames(free_port: int) -> None:
         client.call("counter", 0).result(timeout=2.0)
         # Break the socket and enqueue several more before the send
         # loop gets a chance to run and trip OSError.
-        client._sock.shutdown(socket.SHUT_WR)  # noqa: SLF001
+        client._sock.shutdown(socket.SHUT_WR)
         srv1.close(timeout=1.0)
         wait_port_free(free_port)
         stale = [client.call("counter", i) for i in range(5)]
@@ -804,7 +825,9 @@ def test_call_large_shm_missing_returns_failure_reply(free_port: int) -> None:
     server = TinyServer(name="t-shm-missing", host="127.0.0.1", port=free_port)
     server.bind("shape_of", lambda arr: arr.shape)
     server.start(block=False)
-    client = TinyClient(host="127.0.0.1", port=free_port, name="t-shm-missing-cli")
+    client = TinyClient(
+        host="127.0.0.1", port=free_port, name="t-shm-missing-cli"
+    )
     try:
         # Allocate + immediately unlink a shm block to get a name that
         # looks valid but is not resolvable. Then craft a CALL_LARGE
@@ -820,9 +843,9 @@ def test_call_large_shm_missing_returns_failure_reply(free_port: int) -> None:
         )
         frame = _frame(_MSG_CALL_LARGE, body)
         fut: concurrent.futures.Future = concurrent.futures.Future()
-        with client._pending_lock:  # noqa: SLF001
-            client._pending[9999] = fut  # noqa: SLF001
-        client._send_queue.put((frame, None))  # noqa: SLF001
+        with client._pending_lock:
+            client._pending[9999] = fut
+        client._send_queue.put((frame, None))
 
         with pytest.raises(RuntimeError, match="shared memory"):
             fut.result(timeout=2.0)
@@ -852,16 +875,18 @@ def test_call_large_corrupt_metadata_drops_connection(free_port: int) -> None:
     server = TinyServer(name="t-corrupt-meta", host="127.0.0.1", port=free_port)
     server.bind("noop", lambda _x: None)
     server.start(block=False)
-    client = TinyClient(host="127.0.0.1", port=free_port, name="t-corrupt-meta-cli")
+    client = TinyClient(
+        host="127.0.0.1", port=free_port, name="t-corrupt-meta-cli"
+    )
     try:
         # Push a CALL_LARGE whose body is not a valid pickle. Register
         # a future under a fresh req_id so we can assert it gets failed
         # by the dropped-connection path.
         bogus = _frame(_MSG_CALL_LARGE, b"\x00not a pickle\x00")
         fut: concurrent.futures.Future = concurrent.futures.Future()
-        with client._pending_lock:  # noqa: SLF001
-            client._pending[12345] = fut  # noqa: SLF001
-        client._send_queue.put((bogus, None))  # noqa: SLF001
+        with client._pending_lock:
+            client._pending[12345] = fut
+        client._send_queue.put((bogus, None))
 
         with pytest.raises(ConnectionError):
             fut.result(timeout=2.0)
@@ -882,18 +907,20 @@ def test_corrupt_call_body_drops_connection(free_port: int) -> None:
     fail in bounded time.
     """
     from tinyros.transport import _frame  # type: ignore[attr-defined]
-    from tinyros.transport._common import _MSG_CALL  # noqa: SLF001
+    from tinyros.transport._common import _MSG_CALL
 
     server = TinyServer(name="t-corrupt-call", host="127.0.0.1", port=free_port)
     server.bind("noop", lambda _x: None)
     server.start(block=False)
-    client = TinyClient(host="127.0.0.1", port=free_port, name="t-corrupt-call-cli")
+    client = TinyClient(
+        host="127.0.0.1", port=free_port, name="t-corrupt-call-cli"
+    )
     try:
         bogus = _frame(_MSG_CALL, b"\x00not a pickle\x00")
         fut: concurrent.futures.Future = concurrent.futures.Future()
-        with client._pending_lock:  # noqa: SLF001
-            client._pending[54321] = fut  # noqa: SLF001
-        client._send_queue.put((bogus, None))  # noqa: SLF001
+        with client._pending_lock:
+            client._pending[54321] = fut
+        client._send_queue.put((bogus, None))
 
         with pytest.raises(ConnectionError):
             fut.result(timeout=2.0)
@@ -917,16 +944,20 @@ def test_pending_futures_fail_on_send_failure(free_port: int) -> None:
     iterations = 25
     in_flight = 5
     for i in range(iterations):
-        server = TinyServer(name=f"t-sf-srv-{i}", host="127.0.0.1", port=free_port)
+        server = TinyServer(
+            name=f"t-sf-srv-{i}", host="127.0.0.1", port=free_port
+        )
         server.bind("noop", lambda _x: None)
         server.start(block=False)
-        client = TinyClient(host="127.0.0.1", port=free_port, name=f"t-sf-cli-{i}")
+        client = TinyClient(
+            host="127.0.0.1", port=free_port, name=f"t-sf-cli-{i}"
+        )
         try:
             # Break the write side of the client's socket so the next
             # sendall raises BrokenPipeError immediately. This biases
             # the send loop to lose the race with recv, which is the
             # path the original bug lived on.
-            client._sock.shutdown(socket.SHUT_WR)  # noqa: SLF001
+            client._sock.shutdown(socket.SHUT_WR)
             futures = [client.call("noop", j) for j in range(in_flight)]
             for fut in futures:
                 with pytest.raises(ConnectionError):
@@ -965,21 +996,21 @@ def test_call_racing_teardown_does_not_hang(free_port: int) -> None:
             worker_ready.set()
             result["fut"] = client.call("noop", 1)
 
-        with client._pending_lock:  # noqa: SLF001
+        with client._pending_lock:
             t = threading.Thread(target=_caller, daemon=True)
             t.start()
             # Give the worker time to pass the fast-path `is_set()`
             # check and land on the contended `_pending_lock`.
             assert worker_ready.wait(timeout=1.0)
             time.sleep(0.05)
-            client._running.clear()  # noqa: SLF001
+            client._running.clear()
         t.join(timeout=1.0)
         assert not t.is_alive(), "worker call() must not hang on teardown"
         fut = result["fut"]
         with pytest.raises(ConnectionError):
             fut.result(timeout=1.0)
-        with client._pending_lock:  # noqa: SLF001
-            assert client._pending == {}, (  # noqa: SLF001
+        with client._pending_lock:
+            assert client._pending == {}, (
                 "call() must not leave an entry in _pending once "
                 "_running has been cleared under the lock"
             )
@@ -1018,16 +1049,11 @@ def test_client_drops_on_oversized_reply_header(free_port: int) -> None:
         with pytest.raises(ConnectionError):
             fut.result(timeout=2.0)
         deadline = time.monotonic() + 2.0
-        while (
-            client._send_thread.is_alive()  # noqa: SLF001
-            and time.monotonic() < deadline
-        ):
+        while client._send_thread.is_alive() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert (
             not client._send_thread.is_alive()
-        ), (  # noqa: SLF001
-            "send thread should exit after the recv loop tears down the client"
-        )
+        ), "send thread should exit after the recv loop tears down the client"
     finally:
         for s in accepted:
             try:

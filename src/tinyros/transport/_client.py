@@ -117,7 +117,9 @@ class TinyClient:
         self.port = port
         self.name = name
         self._shm_threshold = (
-            shm_threshold if shm_threshold is not None else _default_shm_threshold()
+            shm_threshold
+            if shm_threshold is not None
+            else _default_shm_threshold()
         )
         self._max_frame_bytes = (
             max_frame_bytes
@@ -212,7 +214,9 @@ class TinyClient:
         fut: concurrent.futures.Future = concurrent.futures.Future()
         if not self._running.is_set():
             fut.set_exception(
-                ConnectionLost(f"tinyros client {self.name!r} is no longer running")
+                ConnectionLost(
+                    f"tinyros client {self.name!r} is no longer running"
+                )
             )
             return fut
         with self._req_id_lock:
@@ -235,7 +239,9 @@ class TinyClient:
         with self._pending_lock:
             if not self._running.is_set():
                 fut.set_exception(
-                    ConnectionLost(f"tinyros client {self.name!r} is no longer running")
+                    ConnectionLost(
+                        f"tinyros client {self.name!r} is no longer running"
+                    )
                 )
                 if shm_name is not None:
                     with self._pending_shm_lock:
@@ -265,7 +271,9 @@ class TinyClient:
             and isinstance(arg, np.ndarray)
             and arg.nbytes >= self._shm_threshold
         ):
-            shm = shared_memory.SharedMemory(create=True, size=max(1, arg.nbytes))
+            shm = shared_memory.SharedMemory(
+                create=True, size=max(1, arg.nbytes)
+            )
             shm_name = shm.name
             with self._pending_shm_lock:
                 self._pending_shm.add(shm_name)
@@ -426,7 +434,9 @@ class TinyClient:
             if body is None:
                 if self._running.is_set():
                     self._fail_all_pending(
-                        ConnectionLost(f"tinyros client {self.name!r}: short read")
+                        ConnectionLost(
+                            f"tinyros client {self.name!r}: short read"
+                        )
                     )
                 return
             if kind != _MSG_REPLY:
@@ -575,7 +585,9 @@ class TinyClient:
         # Atomically block new call()s and drain anything already in
         # flight so a racing caller can't slip a future in after the
         # recv loop has been joined.
-        self._stop_running(ConnectionLost(f"tinyros client {self.name!r} was closed"))
+        self._stop_running(
+            ConnectionLost(f"tinyros client {self.name!r} was closed")
+        )
 
         try:
             self._send_queue.put((_frame(_MSG_BYE, b""), None))
