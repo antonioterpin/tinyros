@@ -93,7 +93,7 @@ def save_latency_plot(
 def get_free_port() -> int:
     """Find a free port on localhost."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("", 0))
+    s.bind(("127.0.0.1", 0))
     port: int = s.getsockname()[1]
     s.close()
     return port
